@@ -239,4 +239,5 @@
 - 结论：本地发布准备通过，远端发布待认证。版本已调整为 `0.1.0-rc.1`，npm 默认标签为 `next`，运行时和 CI 仅声明 Node.js 24+。
 - 兼容性：peer 范围为 `>=0.1.0-rc.5 <0.2.0`；SemVer 实测接受 rc.5、rc.6 和稳定 0.1.x，不接受 rc.4 或 0.2.0。开发依赖固定 rc.6，Node 类型基线同步为 24.13.3。
 - 验证：`pnpm run check` 退出 0，4 个测试文件共 100 个测试通过；类型检查与 tsdown 构建通过；`pnpm audit --prod` 未发现已知漏洞；`pnpm pack --dry-run` 通过且包内仅 8 个预期文件。
-- 远端状态：计划使用 `TingRuDeng/dsh-smart-approval`，该 GitHub 仓库当前不存在；本机 `gh` token 已失效，npm 未登录，因此未创建远端、未推送、未发布。
+- 远端状态（本地准备完成时）：计划使用 `TingRuDeng/dsh-smart-approval`；当时 GitHub 仓库尚未创建且 npm 未登录，因此该阶段未执行推送或发布。
+- GitHub 跟进：公开仓库创建后首次 CI 全部通过，但 v4 Action 触发 Node 20 运行时弃用警告；已将 checkout、setup-node 和 pnpm/action-setup 更新为官方 Node 24 release 的固定提交 SHA，需以更新提交的远端 CI 终态为准。
