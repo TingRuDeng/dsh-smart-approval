@@ -42,6 +42,7 @@
     "security"
   ],
   "license": "MIT",
+  "author": "JimDeng891 <dengm891@yeah.net>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/TingRuDeng/dsh-smart-approval.git"
