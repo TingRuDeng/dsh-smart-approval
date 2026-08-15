@@ -37,12 +37,12 @@ read tool arguments or user authorization context.
 - DeepSeek Harness `>=0.1.0-rc.5 <0.2.0`.
 - `pnpm` on `PATH`; DSH forwards plugin-management operations to pnpm.
 
-The currently published plugin version is `0.1.0-rc.1`. Install it with an
+The currently published plugin version is `0.1.0-rc.2`. Install it with an
 already-installed DSH CLI:
 
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.1
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.2
 dsh --profile web --dump-config
 dsh web
 ```
@@ -50,7 +50,7 @@ dsh web
 For a one-off DSH invocation, follow the upstream `npx` form:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.1
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.2
 npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
 npx @deepseek-ai/dsh@0.1.0-rc.6 web
 ```

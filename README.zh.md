@@ -31,11 +31,11 @@
 - DeepSeek Harness `>=0.1.0-rc.5 <0.2.0`。
 - `PATH` 中存在 `pnpm`；DSH 会把插件管理操作转发给 pnpm。
 
-当前已经发布的插件版本是 `0.1.0-rc.1`。已经安装 DSH CLI 时执行：
+当前已经发布的插件版本是 `0.1.0-rc.2`。已经安装 DSH CLI 时执行：
 
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.1
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.2
 dsh --profile web --dump-config
 dsh web
 ```
@@ -43,7 +43,7 @@ dsh web
 如需一次性运行 DSH，使用上游 README 中的 `npx` 形式：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.1
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.2
 npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
 npx @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
