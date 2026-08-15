@@ -3,6 +3,7 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-attachment@0.1.0-rc.6'
   - '@deepseek-ai/dsh-brand@0.1.0-rc.6'
   - '@deepseek-ai/dsh-commands@0.1.0-rc.6'
+  - '@deepseek-ai/dsh-fs@0.1.0-rc.6'
   - '@deepseek-ai/dsh-invariants@0.1.0-rc.6'
   - '@deepseek-ai/dsh-llm@0.1.0-rc.6'
   - '@deepseek-ai/dsh-permission-presets@0.1.0-rc.6'

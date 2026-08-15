@@ -45,7 +45,7 @@ Web 输入框底部应显示两个控件：
 
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.4
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.5
 dsh --profile web --dump-config
 dsh web
 ```
@@ -53,7 +53,7 @@ dsh web
 一次性运行：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.4
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.5
 npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
 npx @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -132,18 +132,27 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 
 插件是 DSH `approval/request` waterfall 中的前置 answerer：
 
-1. 根据 `callId` 定位真实的 `tool/call` 事件。目前只有 DSH `bash` 和 `pwsh` 具备自动审核契约；
-   其他工具会按当前模式转人工或拒绝。
-2. 仅使用当前 turn 中直接、纯文本的用户消息作为授权上下文。历史轮次、Assistant 消息、工具输出和
-   模型生成的授权理由均不构成授权。
-3. 只传递影响 shell 执行的字段：`command`、`timeoutMs`、`workdir`、`run_in_background` 和
-   `sandbox_permissions`。未知字段、图片、非文本内容或超限上下文不会被截断，而是失败关闭。
-4. 模型调用前执行确定性检查。凭据访问、破坏性命令、系统变更、后台任务、依赖安装、发布、远程写入、
-   数据上传，以及敏感的 workspace/workdir 条件都不会被归类为可自动放行。
-5. 审核器必须返回严格的双字段 JSON。`allow` 表示安全，`human` 表示高风险或不确定；`reject`
-   只用于凭据外传、绕过安全控制、未授权远程写入等明确恶意行为。
-6. 只有合法 `allow` 会映射为 `allowed-once`。超时、异常、非法输出、上下文不完整，或审核期间模式
-   发生变化时，都会按当前模式失败关闭。
+1. 根据 `callId` 定位真实的 `tool/call` 事件。DSH `bash`、`pwsh`、`write`、`edit` 分别使用封闭、
+   有版本的动作适配器；未知工具或未来新增的未知参数都会失败关闭。
+2. 将当前 turn 与有界的近期直接用户纯文本组合为授权上下文；新约束覆盖旧范围，载荷会明确标记是否省略了
+   更早历史。Assistant 消息、工具输出、模型生成的 justification 和此前审批结果均不构成授权。
+3. 仅传递真实执行语义：Shell 传递命令及执行字段；`write` 传递精确路径和完整新内容；`edit` 传递精确
+   路径、old/new 字符串与 replace-all 标志。模型生成的描述和授权理由会被剔除。
+4. 文件变更通过 DSH 文件系统服务读取无内容证据：解析后的展示路径、与 workspace 的关系、路径/目标类型
+   及可选字节数，不读取目标文件正文。最终符号链接、规范路径别名、异常元数据、敏感路径和系统位置会在
+   模型调用前停止。
+5. 确定性前检还会阻止凭据材料、破坏性命令、系统变更、后台任务、依赖安装、发布、远程写入、数据上传及
+   敏感 workspace/workdir 条件。
+6. 模型只返回严格的四字段分类：`riskLevel`、`authorization`、`intent` 和封闭的 `reasonCode`，不能直接
+   授权。本地代码仅把“低风险 + 善意 + 高或中等直接用户授权”映射为允许；不确定转人工，明确恶意按模式拒绝。
+7. 每次成功分类也只产生 `allowed-once`。下一次相似申请仍会重新检查并重新调用模型。超时、异常、非法输出、
+   证据不完整、取消，或检查/审核期间模式发生变化，都会按当前模式失败关闭。
+
+### 重复申请会重新审查，不会记住授权
+
+如果用户要求连续完成多次普通写入，而且每个精确动作都明确属于该意图，智能审批可以让第二次及后续申请
+无需再次点击。每个申请仍会独立调用模型并只获得一次性授权；第一次人工允许或模型结果不会变成目录白名单、
+缓存先例或永久权限。
 
 ## 配置
 
@@ -168,20 +177,21 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 | `timeoutMs` | `15000` | 整个审核调用的强制期限 |
 | `maxTokens` | `128` | 审核输出上限 |
 | `maxToolArgumentChars` | `12000` | 工具参数上限；超限时不截断并失败关闭 |
-| `maxUserMessages` | `4` | 当前 turn 的直接用户消息数量上限 |
-| `maxUserContextChars` | `8000` | 用户上下文上限；超限时不截断并失败关闭 |
+| `maxUserMessages` | `4` | 当前及近期直接用户消息上限；省略旧历史时会明确标记 |
+| `maxUserContextChars` | `8000` | 用户上下文上限；当前 turn 不截断，旧历史可带标记地省略 |
 
 本插件的 bundle 不覆盖 `permission` 行，因此不会替换 profile 已有的权限预设。
 
 ## 模型、数据与安全边界
 
-- 人工审批不调用审核模型。智能审批和无人值守会把 workspace 根目录、最小化 shell 字段及当前 turn
-  的直接用户纯文本发送给审核 provider。
+- 人工审批不调用审核模型。智能审批和无人值守会把 workspace 根目录、规范化动作、有界的近期直接用户
+  纯文本及不含正文的文件目标元数据发送给审核 provider。`write`/`edit` 的规范化动作包含判断本次变更所需的
+  精确新内容或替换文本；检测到凭据材料时会在本地停止。
 - 复用当前会话模型便于部署，但不构成独立安全复核；敏感环境应配置独立、受控的 provider 路由。
 - 只有已经进入 DSH 审批通道的请求才能被审核；不触发审批的网络或远程操作不在本插件控制范围内。
-- 模型分类不是安全证明。未知工具、未知参数、后台执行、非文本或不完整上下文均失败关闭：智能审批转人工，
-  无人值守拒绝。
-- 每次自动授权只对当前调用有效，不保存目录白名单或永久授权。
+- 模型分类不是安全证明。未知工具或参数、文件系统别名、后台执行、非文本或不完整上下文均失败关闭：智能
+  审批转人工，无人值守拒绝。
+- 每次自动授权只对当前调用有效，重复申请也会重新审查；不保存决策缓存、目录白名单、审批先例或永久授权。
 - 日志只记录工具名、结果和短原因码，不记录完整提示、参数、凭据或模型推理。
 - 智能审批的人工回退和人工审批需要其他 Web、ACP 或自定义人工 answerer；如果不存在，DSH 保持失败关闭。
 - DSH 当前只有一个 `workspace-write` 根目录。一次性 Full access 仍拥有宽泛文件系统权限，本插件不会把它
@@ -196,15 +206,16 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 | `src/review-mode-storage.ts` | Session 生命周期绑定的自动审查模式伴随存储 |
 | `src/client/` | Web 端独立自动审查选择框和客户端插件注册 |
 | `src/approval-handler.ts` | 三模式路由、waterfall 决策和审核后模式复核 |
-| `src/review-context.ts` | 当前调用与当前 turn 上下文提取和最小化 |
-| `src/review-policy.ts` | 确定性的失败关闭前检 |
-| `src/llm-reviewer.ts` | 审核提示、流式解析、严格裁决协议和超时 |
+| `src/review-context.ts` | 封闭动作适配器和有界的直接用户上下文提取 |
+| `src/file-target-inspector.ts` | DSH 文件系统只读证据与路径安全分类 |
+| `src/review-policy.ts` | 确定性前检、严格分类解析和本地决策映射 |
+| `src/llm-reviewer.ts` | 审核提示、流式解析、严格评估协议和超时 |
 | `cordis.patch.yml` | 仅挂载主机插件，不覆盖权限预设 |
 | `tests/` | 主机、策略、协议、迁移、投影和浏览器回归契约 |
 
-必须保持的不变量：权限与自动审查状态互不改写；缺失或含糊的证据不能自动放行；只有同一 turn
-的直接用户文本可以建立授权；只有严格合法的 `allow` 可以返回 `allowed-once`；人工审批不能检查申请
-内容或调用模型；审核期间切换模式必须使原自动放行结果失效。
+必须保持的不变量：权限与自动审查状态互不改写；缺失或含糊的证据不能自动放行；只有有界的直接用户文本
+可以建立授权且新约束优先；此前审批不构成授权；只有本地映射后的低风险善意分类可以返回
+`allowed-once`；人工审批不能检查申请内容或调用模型；检查或审核期间切换模式必须使原结果失效。
 
 ## 开发
 

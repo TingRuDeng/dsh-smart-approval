@@ -2,8 +2,20 @@
 
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
-import { preflightApproval, type ReviewerDecision } from './review-policy.ts'
-import { buildReviewPayload, type ReviewContextLimits, type ReviewPayload } from './review-context.ts'
+import {
+  decisionFromAssessment,
+  preflightApproval,
+  preflightFileTarget,
+  type ReviewerAssessment,
+  type ReviewerDecision,
+} from './review-policy.ts'
+import {
+  buildReviewPayload,
+  type FileReviewAction,
+  type FileTargetInspectionResult,
+  type ReviewContextLimits,
+  type ReviewPayload,
+} from './review-context.ts'
 import type { ReviewMode } from './review-mode.ts'
 
 /** Sanitized decision record suitable for operational logs. */
@@ -22,11 +34,17 @@ export interface SmartApprovalHandlerOptions {
   readonly currentMode: (session: Session) => ReviewMode
   /** Trusted-context limits. */
   readonly limits: ReviewContextLimits
+  /** Resolve read-only target evidence for a normalized file mutation. */
+  readonly inspectFileTarget?: (
+    action: FileReviewAction,
+    workspaceRoot: string | undefined,
+    request: ApprovalRequest,
+  ) => Promise<FileTargetInspectionResult>
   /** Review one prepared payload. A null result is an invalid/unavailable review. */
   readonly review: (
     payload: ReviewPayload,
     request: ApprovalRequest,
-  ) => Promise<ReviewerDecision | null>
+  ) => Promise<ReviewerAssessment | null>
   /** Record a sanitized outcome. */
   readonly log: (record: SmartApprovalLogRecord) => void
 }
@@ -71,7 +89,7 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
     try {
       preflight = preflightApproval(
         context.payload.action,
-        context.payload.userRequests,
+        context.payload.trustedUserContext.messages,
         context.payload.workspaceRoot,
       )
     } catch {
@@ -85,10 +103,65 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
       return rejectOrHandoff(selectedMode, preflight.reasonCode, request, next, options)
     }
 
-    let decision: ReviewerDecision | null = null
+    let reviewPayload = context.payload
+    if (context.payload.action.kind === 'file-write' || context.payload.action.kind === 'file-edit') {
+      if (options.inspectFileTarget === undefined) {
+        return rejectOrHandoff(selectedMode, 'file-target-unavailable', request, next, options)
+      }
+      let inspection: FileTargetInspectionResult
+      try {
+        inspection = await options.inspectFileTarget(
+          context.payload.action,
+          context.payload.workspaceRoot,
+          request,
+        )
+      } catch {
+        if (requestAborted(request)) {
+          safeLog(options, { outcome: 'cancelled', reasonCode: 'request-cancelled', toolName: request.toolName })
+          return 'cancelled'
+        }
+        return rejectOrHandoff(selectedMode, 'file-target-error', request, next, options)
+      }
+      if (requestAborted(request)) {
+        safeLog(options, { outcome: 'cancelled', reasonCode: 'request-cancelled', toolName: request.toolName })
+        return 'cancelled'
+      }
+      if (inspection.kind === 'human') {
+        return rejectOrHandoff(selectedMode, inspection.reasonCode, request, next, options)
+      }
+      const targetPreflight = preflightFileTarget(context.payload.action, inspection.evidence)
+      if (targetPreflight !== null) {
+        if (targetPreflight.decision === 'reject') {
+          safeLog(options, {
+            outcome: 'rejected',
+            reasonCode: targetPreflight.reasonCode,
+            toolName: request.toolName,
+          })
+          return 'rejected'
+        }
+        return rejectOrHandoff(selectedMode, targetPreflight.reasonCode, request, next, options)
+      }
+      reviewPayload = { ...context.payload, fileTarget: inspection.evidence }
+      let modeAfterInspection: ReviewMode
+      try {
+        modeAfterInspection = options.currentMode(request.agent.session)
+      } catch {
+        return rejectOrHandoff(selectedMode, 'mode-error', request, next, options)
+      }
+      if (modeAfterInspection !== selectedMode) {
+        if (modeAfterInspection === 'unattended') {
+          safeLog(options, { outcome: 'rejected', reasonCode: 'mode-changed', toolName: request.toolName })
+          return 'rejected'
+        }
+        safeLog(options, { outcome: 'human', reasonCode: 'mode-changed', toolName: request.toolName })
+        return next()
+      }
+    }
+
+    let assessment: ReviewerAssessment | null = null
     let reviewFailed = false
     try {
-      decision = await options.review(context.payload, request)
+      assessment = await options.review(reviewPayload, request)
     } catch {
       if (requestAborted(request)) {
         safeLog(options, { outcome: 'cancelled', reasonCode: 'request-cancelled', toolName: request.toolName })
@@ -115,6 +188,7 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
       return next()
     }
     if (reviewFailed) return rejectOrHandoff(selectedMode, 'reviewer-error', request, next, options)
+    const decision = assessment === null ? null : decisionFromAssessment(assessment)
     if (decision?.decision === 'reject') {
       safeLog(options, { outcome: 'rejected', reasonCode: decision.reasonCode, toolName: request.toolName })
       return 'rejected'

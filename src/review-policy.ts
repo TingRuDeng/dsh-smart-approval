@@ -1,6 +1,7 @@
 /** Deterministic checks and strict output parsing for approval review. */
 
 import { isAbsolute, resolve } from 'node:path'
+import type { FileReviewAction, FileTargetEvidence } from './review-context.ts'
 
 /** Stable reasons an approval model may use when allowing one request. */
 export const ALLOW_REASON_CODES = [
@@ -41,8 +42,53 @@ export type ReviewerDecision =
   | { readonly decision: 'human'; readonly reasonCode: HumanReasonCode }
   | { readonly decision: 'reject'; readonly reasonCode: RejectReasonCode }
 
+/** Risk level classified by the reviewer without granting any permission. */
+export type ReviewRiskLevel = 'low' | 'medium' | 'high' | 'critical'
+/** Strength of direct-user authorization classified for the exact action. */
+export type ReviewAuthorization = 'high' | 'medium' | 'low' | 'unknown'
+/** Security intent classified by the reviewer. */
+export type ReviewIntent = 'benign' | 'uncertain' | 'malicious'
+
+/** Strict model assessment whose reason code must agree with its intent. */
+export type ReviewerAssessment =
+  | {
+    readonly riskLevel: ReviewRiskLevel
+    readonly authorization: ReviewAuthorization
+    readonly intent: 'benign'
+    readonly reasonCode: AllowReasonCode
+  }
+  | {
+    readonly riskLevel: ReviewRiskLevel
+    readonly authorization: ReviewAuthorization
+    readonly intent: 'uncertain'
+    readonly reasonCode: HumanReasonCode
+  }
+  | {
+    readonly riskLevel: ReviewRiskLevel
+    readonly authorization: ReviewAuthorization
+    readonly intent: 'malicious'
+    readonly reasonCode: RejectReasonCode
+  }
+
+/** Convert one model classification into the only decision used by approval modes. */
+export function decisionFromAssessment(assessment: ReviewerAssessment): ReviewerDecision {
+  if (assessment.intent === 'malicious') {
+    return { decision: 'reject', reasonCode: assessment.reasonCode }
+  }
+  if (assessment.intent === 'uncertain') {
+    return { decision: 'human', reasonCode: assessment.reasonCode }
+  }
+  if (assessment.riskLevel !== 'low') return { decision: 'human', reasonCode: 'uncertain' }
+  if (assessment.authorization === 'low' || assessment.authorization === 'unknown') {
+    return { decision: 'human', reasonCode: 'scope-not-authorized' }
+  }
+  return { decision: 'allow', reasonCode: assessment.reasonCode }
+}
+
 /** Minimal action description consumed by deterministic preflight checks. */
 export interface ApprovalAction {
+  /** Closed normalized action kind, when the caller has one. */
+  readonly kind?: 'shell' | 'file-write' | 'file-edit'
   /** DSH tool name attached to the approval request. */
   readonly toolName: string
   /** Parsed `tool/call` arguments. */
@@ -62,21 +108,25 @@ export const REVIEWER_OUTPUT_MAX_CHARS = 512
  * @param output - complete visible text produced by the reviewer model.
  * @returns the closed decision, or `null` when the response is not exact.
  */
-export function parseReviewerOutput(output: string): ReviewerDecision | null {
+export function parseReviewerOutput(output: string): ReviewerAssessment | null {
   if (output.length > REVIEWER_OUTPUT_MAX_CHARS) return null
   const trimmed = output.trim()
-  const decisionFirst = trimmed.match(/^\{\s*"decision"\s*:\s*"(allow|human|reject)"\s*,\s*"reasonCode"\s*:\s*"([a-z-]+)"\s*\}$/)
-  const reasonFirst = trimmed.match(/^\{\s*"reasonCode"\s*:\s*"([a-z-]+)"\s*,\s*"decision"\s*:\s*"(allow|human|reject)"\s*\}$/)
-  const decision = decisionFirst?.[1] ?? reasonFirst?.[2]
-  const reasonCode = decisionFirst?.[2] ?? reasonFirst?.[1]
-  if (decision === 'allow' && reasonCode !== undefined && allowReasons.has(reasonCode)) {
-    return { decision, reasonCode: reasonCode as AllowReasonCode }
+  const match = trimmed.match(/^\{\s*"riskLevel"\s*:\s*"(low|medium|high|critical)"\s*,\s*"authorization"\s*:\s*"(high|medium|low|unknown)"\s*,\s*"intent"\s*:\s*"(benign|uncertain|malicious)"\s*,\s*"reasonCode"\s*:\s*"([a-z-]+)"\s*\}$/)
+  const riskLevel = match?.[1] as ReviewRiskLevel | undefined
+  const authorization = match?.[2] as ReviewAuthorization | undefined
+  const intent = match?.[3] as ReviewIntent | undefined
+  const reasonCode = match?.[4]
+  if (riskLevel === undefined || authorization === undefined || intent === undefined || reasonCode === undefined) {
+    return null
   }
-  if (decision === 'human' && reasonCode !== undefined && humanReasons.has(reasonCode)) {
-    return { decision, reasonCode: reasonCode as HumanReasonCode }
+  if (intent === 'benign' && allowReasons.has(reasonCode)) {
+    return { riskLevel, authorization, intent, reasonCode: reasonCode as AllowReasonCode }
   }
-  if (decision === 'reject' && reasonCode !== undefined && rejectReasons.has(reasonCode)) {
-    return { decision, reasonCode: reasonCode as RejectReasonCode }
+  if (intent === 'uncertain' && humanReasons.has(reasonCode)) {
+    return { riskLevel, authorization, intent, reasonCode: reasonCode as HumanReasonCode }
+  }
+  if (intent === 'malicious' && rejectReasons.has(reasonCode)) {
+    return { riskLevel, authorization, intent, reasonCode: reasonCode as RejectReasonCode }
   }
   return null
 }
@@ -97,7 +147,7 @@ const OPAQUE_SHELL = /(?:\bpython(?:3(?:\.\d+)?)?\b[^\n;&|]*\s-c(?:\s|$)|\bnode\
  * Stop obvious high-risk requests before any action data is sent to a model.
  * A `null` result means only that model review may proceed; it is never a grant.
  * @param action - parsed tool action being considered.
- * @param userRequests - current-turn direct-user text that would reach the reviewer.
+ * @param userRequests - bounded recent direct-user text that would reach the reviewer.
  * @param workspaceRoot - session workspace used to resolve relative shell workdirs.
  * @returns a non-safe classification for mode-specific handling, or `null` for model review.
  */
@@ -114,6 +164,7 @@ export function preflightApproval(
   if (/^(?:delete|remove|unlink|rmdir)$/i.test(action.toolName)) {
     return { decision: 'human', reasonCode: 'destructive' }
   }
+  if (action.toolName === 'write' || action.toolName === 'edit') return null
   if (action.toolName !== 'bash' && action.toolName !== 'pwsh') {
     return { decision: 'human', reasonCode: 'uncertain' }
   }
@@ -134,6 +185,28 @@ export function preflightApproval(
   if (effectiveWorkdir === undefined) return { decision: 'human', reasonCode: 'uncertain' }
   if (containsSensitiveMaterial(effectiveWorkdir)) {
     return { decision: 'human', reasonCode: 'credential-risk' }
+  }
+  return null
+}
+
+/**
+ * Apply deterministic safety checks to read-only evidence for one file mutation.
+ * A null result permits model review but never grants the action.
+ */
+export function preflightFileTarget(
+  action: FileReviewAction,
+  evidence: FileTargetEvidence,
+): ReviewerDecision | null {
+  if (containsSensitiveMaterial(evidence.resolvedPath)) {
+    return { decision: 'human', reasonCode: 'credential-risk' }
+  }
+  if (evidence.systemLocation) return { decision: 'human', reasonCode: 'system-change' }
+  if (evidence.pathEntryType === 'symlink') return { decision: 'human', reasonCode: 'uncertain' }
+  const missingTarget = evidence.pathEntryType === 'missing' && evidence.targetType === 'missing'
+  const regularTarget = evidence.pathEntryType === 'file' && evidence.targetType === 'file'
+  if (!missingTarget && !regularTarget) return { decision: 'human', reasonCode: 'uncertain' }
+  if (action.kind === 'file-edit' && !regularTarget) {
+    return { decision: 'human', reasonCode: 'uncertain' }
   }
   return null
 }

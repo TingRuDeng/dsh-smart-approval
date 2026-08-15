@@ -8,6 +8,11 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { createSmartApprovalHandler } from './approval-handler.ts'
+import {
+  createFileTargetInspector,
+  type FileProbeTarget,
+  type FileTargetFileSystem,
+} from './file-target-inspector.ts'
 import { createLlmReviewer, resolveLlmReviewerConfig } from './llm-reviewer.ts'
 import {
   applyReviewModeEvent, DEFAULT_REVIEW_MODE, foldReviewModeEvents, initialReviewModeState,
@@ -27,7 +32,7 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647
 export const name = 'dsh-smart-approval'
 
 /** Services that must exist before the answerer registers. */
-export const inject = ['approval', 'llm', 'sessions', 'storageDomain']
+export const inject = ['approval', 'llm', 'sessions', 'storageDomain', 'fs']
 
 /** Runtime configuration for smart approval. */
 export interface Config {
@@ -43,7 +48,7 @@ export interface Config {
   readonly maxTokens?: number
   /** Maximum raw character count of one tool argument object. */
   readonly maxToolArgumentChars?: number
-  /** Number of current-turn direct-user messages included as authorization context. */
+  /** Number of current and recent direct-user messages included as authorization context. */
   readonly maxUserMessages?: number
   /** Maximum combined character count of included direct-user messages. */
   readonly maxUserContextChars?: number
@@ -144,6 +149,9 @@ async function mount(
       maxUserMessages: config.maxUserMessages ?? DEFAULT_MAX_USER_MESSAGES,
       maxUserContextChars: config.maxUserContextChars ?? DEFAULT_MAX_USER_CONTEXT_CHARS,
     },
+    inspectFileTarget: createFileTargetInspector(
+      (ctx as Context & { fs: FileTargetFileSystem<FileProbeTarget> }).fs,
+    ),
     review,
     log: record => ctx.logger.info(
       `smart-approval: ${record.outcome} (${record.reasonCode}) for tool ${JSON.stringify(record.toolName)}`,

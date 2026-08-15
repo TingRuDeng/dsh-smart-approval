@@ -50,7 +50,7 @@ After installing the DSH CLI globally:
 
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.4
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.5
 dsh --profile web --dump-config
 dsh web
 ```
@@ -58,7 +58,7 @@ dsh web
 For one-off execution:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.4
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.5
 npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
 npx @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -148,27 +148,42 @@ does not modify permission events.
 
 The plugin is an early answerer in DSH's `approval/request` waterfall:
 
-1. It resolves the real `tool/call` event by `callId`. Only DSH `bash` and
-   `pwsh` have an automatic-review contract; other tools are delegated or
-   rejected according to the selected mode.
-2. It uses only direct plain-text user messages from the current turn as
-   authorization context. Earlier turns, assistant messages, tool output, and
-   model-written approval reasons do not grant authority.
-3. It sends only shell fields that affect execution: `command`, `timeoutMs`,
-   `workdir`, `run_in_background`, and `sandbox_permissions`. Unknown fields,
-   images, non-text content, or over-limit context fail closed without
-   truncation.
-4. Deterministic checks run before the model. Credential access, destructive
-   commands, system changes, background work, dependency installation,
-   publishing, remote writes, uploads, and sensitive workspace/workdir
-   conditions are never classified as automatically safe.
-5. The reviewer must return strict two-field JSON. `allow` means safe, `human`
-   means high-risk or uncertain, and `reject` is reserved for clearly malicious
-   behavior such as credential exfiltration, safety-control bypass, or an
-   unauthorized remote write.
-6. Only a valid `allow` becomes `allowed-once`. Timeouts, exceptions, malformed
-   output, incomplete context, or a mode change during review fail closed under
-   the active mode.
+1. It resolves the real `tool/call` event by `callId`. DSH `bash`, `pwsh`,
+   `write`, and `edit` have closed, versioned action adapters. Unknown tools or
+   future argument fields fail closed.
+2. It combines the current turn with bounded recent direct-user text. Newer
+   constraints override older scope, and the payload says when older history
+   was omitted. Assistant messages, tool output, model-written justifications,
+   and earlier approval outcomes never establish authority.
+3. It sends only execution semantics. Shell review receives the command and
+   execution fields; `write` receives the exact path and complete new content;
+   `edit` receives the exact path, old/new strings, and replace-all flag.
+   Model-authored descriptions and justifications are removed.
+4. File mutations use DSH's filesystem service for read-only evidence: resolved
+   display path, workspace containment, path/target type, and optional byte
+   size. File content is not read. Final symlinks, canonical path aliases,
+   malformed metadata, sensitive paths, and protected system locations stop
+   before model review.
+5. Deterministic checks also stop credential material, destructive commands,
+   system changes, background work, dependency installation, publishing,
+   remote writes, uploads, and sensitive workspace/workdir conditions.
+6. The model returns a strict four-field classification: `riskLevel`,
+   `authorization`, `intent`, and a closed `reasonCode`. It cannot directly
+   grant permission. Local code allows only low-risk benign work with high or
+   medium direct-user authorization; uncertainty is handed off and clearly
+   malicious intent is rejected according to the selected mode.
+7. Every successful classification becomes only `allowed-once`. The next
+   similar request is inspected and classified again. Timeouts, exceptions,
+   malformed output, incomplete evidence, cancellation, or a mode change fail
+   closed under the active mode.
+
+### Repeated requests are re-reviewed, not remembered
+
+If the user asks for several ordinary writes and each exact request is clearly
+within that intent, smart approval can allow the second and later requests
+without another click. Each request still makes its own model call and receives
+its own one-shot grant. A previous human click or model result never creates a
+directory allowlist, cached precedent, or permanent permission.
 
 ## Configuration
 
@@ -194,8 +209,8 @@ route, override the plugin row in the profile's `cordis.patch.yml`:
 | `timeoutMs` | `15000` | Hard deadline for the complete review call |
 | `maxTokens` | `128` | Maximum reviewer output |
 | `maxToolArgumentChars` | `12000` | Tool-argument limit; overflow fails closed without truncation |
-| `maxUserMessages` | `4` | Direct current-turn user-message limit |
-| `maxUserContextChars` | `8000` | User-context limit; overflow fails closed without truncation |
+| `maxUserMessages` | `4` | Current plus recent direct-user message limit; older history is omitted explicitly |
+| `maxUserContextChars` | `8000` | User-context limit; the current turn is never truncated, while older history may be omitted explicitly |
 
 The bundle does not override the `permission` row, so it does not replace a
 profile's existing permission presets.
@@ -203,19 +218,22 @@ profile's existing permission presets.
 ## Model, data, and security boundaries
 
 - Manual mode invokes no reviewer. Smart and unattended modes send the
-  workspace root, minimized shell fields, and direct current-turn user text to
-  the review provider.
+  workspace root, normalized action, bounded recent direct-user text, and
+  content-free file-target metadata to the review provider. For `write` and
+  `edit`, the normalized action includes the exact new/replacement text needed
+  to classify the mutation; detected credential material is stopped locally.
 - Reusing the current session model is convenient but is not an independent
   security review. Sensitive deployments should use a separate controlled
   provider route.
 - Only requests that already enter DSH's approval channel can be reviewed.
   Network or remote actions that do not trigger approval are outside this
   plugin's control.
-- Model classification is not a security proof. Unknown tools, arguments,
-  background execution, and non-text or incomplete context fail closed: smart
-  mode asks a human and unattended mode rejects.
-- Every automatic approval is one-time. The plugin stores no directory
-  allowlist or permanent grant.
+- Model classification is not a security proof. Unknown tools or arguments,
+  filesystem aliases, background execution, and non-text or incomplete context
+  fail closed: smart mode asks a human and unattended mode rejects.
+- Every automatic approval is one-time and every repeated request is reviewed
+  again. The plugin stores no decision cache, directory allowlist, approval
+  precedent, or permanent grant.
 - Logs contain tool name, outcome, and short reason code, not full prompts,
   arguments, credentials, or model reasoning.
 - Smart fallback and manual mode require another Web, ACP, or custom human
@@ -233,17 +251,19 @@ profile's existing permission presets.
 | `src/review-mode-storage.ts` | Session-lifecycle-bound automatic-review mode sidecar |
 | `src/client/` | Web selector and browser-plugin registration |
 | `src/approval-handler.ts` | Three-mode routing, waterfall decisions, and post-review mode recheck |
-| `src/review-context.ts` | Current-call and current-turn context extraction/minimization |
-| `src/review-policy.ts` | Deterministic fail-closed prechecks |
-| `src/llm-reviewer.ts` | Reviewer prompt, stream parser, strict verdict protocol, and timeout |
+| `src/review-context.ts` | Closed action adapters and bounded direct-user context extraction |
+| `src/file-target-inspector.ts` | Read-only DSH filesystem evidence and path safety classification |
+| `src/review-policy.ts` | Deterministic prechecks, strict classification parser, and local decision mapping |
+| `src/llm-reviewer.ts` | Reviewer prompt, stream parser, strict assessment protocol, and timeout |
 | `cordis.patch.yml` | Host-plugin mount only; it does not override permission presets |
 | `tests/` | Host, policy, protocol, migration, projection, and browser contracts |
 
 Invariants: permission and review mode never rewrite each other; missing or
-ambiguous evidence never becomes an automatic allow; only direct user text from
-the same turn can grant authority; only strict `allow` returns `allowed-once`;
-manual mode inspects no request content and calls no model; and a mode change
-during review invalidates the original automatic allow.
+ambiguous evidence never becomes an automatic allow; only bounded direct-user
+text can establish authority and newer constraints win; previous approvals are
+never authorization; only a locally mapped low-risk benign assessment returns
+`allowed-once`; manual mode inspects no request content and calls no model; and
+a mode change during inspection or review invalidates the original result.
 
 ## Development
 

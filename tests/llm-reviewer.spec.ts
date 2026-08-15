@@ -7,8 +7,10 @@ import { createLlmReviewer, resolveLlmReviewerConfig } from '../src/llm-reviewer
 import type { ReviewPayload } from '../src/review-context.ts'
 
 const payload: ReviewPayload = {
+  schemaVersion: 2,
   workspaceRoot: '/work/main',
   action: {
+    kind: 'shell',
     toolName: 'bash',
     arguments: {
       command: 'pnpm test',
@@ -16,8 +18,15 @@ const payload: ReviewPayload = {
       sandbox_permissions: 'danger-full-access',
     },
   },
-  userRequests: ['在 /work/other 运行测试'],
+  trustedUserContext: {
+    messages: ['在 /work/other 运行测试'],
+    historyOmitted: false,
+  },
 }
+
+const benignAssessmentJson = '{"riskLevel":"low","authorization":"high","intent":"benign","reasonCode":"bounded-build-test"}'
+const uncertainAssessmentJson = '{"riskLevel":"medium","authorization":"unknown","intent":"uncertain","reasonCode":"uncertain"}'
+const maliciousAssessmentJson = '{"riskLevel":"critical","authorization":"low","intent":"malicious","reasonCode":"credential-exfiltration"}'
 
 function requestOf(options: {
   provider?: string
@@ -71,11 +80,13 @@ describe('resolveLlmReviewerConfig', () => {
 
 describe('createLlmReviewer', () => {
   it('uses the current session route and accepts strict reviewer JSON', async () => {
-    const llm = streaming(chunks('{"decision":"allow","reasonCode":"bounded-build-test"}'))
+    const llm = streaming(chunks(benignAssessmentJson))
     const review = createLlmReviewer(llm, resolveLlmReviewerConfig({}))
 
     await expect(review(payload, requestOf({ provider: 'current-provider', model: 'current-model' }))).resolves.toEqual({
-      decision: 'allow',
+      riskLevel: 'low',
+      authorization: 'high',
+      intent: 'benign',
       reasonCode: 'bounded-build-test',
     })
     expect(llm.seen).toHaveLength(1)
@@ -87,11 +98,13 @@ describe('createLlmReviewer', () => {
       tools: [],
     })
     expect(JSON.stringify(llm.seen[0]?.messages)).toContain('/work/other')
+    expect(llm.seen[0]?.system).toContain('riskLevel')
+    expect(llm.seen[0]?.system).toContain('The local policy, not you, decides')
     expect(llm.seen[0]?.signal?.aborted).toBe(true)
   })
 
   it('uses an explicitly configured reviewer route', async () => {
-    const llm = streaming(chunks('{"decision":"human","reasonCode":"uncertain"}'))
+    const llm = streaming(chunks(uncertainAssessmentJson))
     const review = createLlmReviewer(llm, resolveLlmReviewerConfig({
       provider: 'review-provider',
       model: 'review-model',
@@ -101,31 +114,35 @@ describe('createLlmReviewer', () => {
     expect(llm.seen[0]).toMatchObject({ provider: 'review-provider', model: 'review-model' })
   })
 
-  it('returns a strict malicious-request rejection from the reviewer', async () => {
-    const llm = streaming(chunks('{"decision":"reject","reasonCode":"credential-exfiltration"}'))
+  it('returns a strict malicious classification from the reviewer', async () => {
+    const llm = streaming(chunks(maliciousAssessmentJson))
     const review = createLlmReviewer(llm, resolveLlmReviewerConfig({}))
 
     await expect(review(payload, requestOf({ provider: 'p', model: 'm' }))).resolves.toEqual({
-      decision: 'reject',
+      riskLevel: 'critical',
+      authorization: 'low',
+      intent: 'malicious',
       reasonCode: 'credential-exfiltration',
     })
   })
 
-  it('ignores bounded reasoning and parses only the visible JSON decision', async () => {
-    const decision = '{"decision":"allow","reasonCode":"bounded-build-test"}'
+  it('ignores bounded reasoning and parses only the visible JSON assessment', async () => {
+    const assessment = benignAssessmentJson
     const llm = streaming([
       { type: 'block-start', index: 0, blockType: 'reasoning' },
       { type: 'reasoning-delta', index: 0, text: 'Check scope and reversibility.' },
       { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'Check scope and reversibility.' } },
       { type: 'block-start', index: 1, blockType: 'text' },
-      { type: 'text-delta', index: 1, text: decision },
-      { type: 'block-end', index: 1, block: { type: 'text', text: decision } },
+      { type: 'text-delta', index: 1, text: assessment },
+      { type: 'block-end', index: 1, block: { type: 'text', text: assessment } },
       { type: 'finish', reason: { kind: 'stop' } },
     ])
     const review = createLlmReviewer(llm, resolveLlmReviewerConfig({}))
 
     await expect(review(payload, requestOf({ provider: 'p', model: 'm' }))).resolves.toEqual({
-      decision: 'allow',
+      riskLevel: 'low',
+      authorization: 'high',
+      intent: 'benign',
       reasonCode: 'bounded-build-test',
     })
   })
@@ -136,7 +153,7 @@ describe('createLlmReviewer', () => {
       {
         type: 'reasoning-delta',
         index: 0,
-        text: '{"decision":"allow","reasonCode":"read-only"}',
+        text: benignAssessmentJson,
       },
       { type: 'finish', reason: { kind: 'stop' } },
     ])
@@ -147,7 +164,7 @@ describe('createLlmReviewer', () => {
 
   it.each([-1, 0.5, Number.NaN])('rejects an invalid stream block index: %s', async (index) => {
     const llm = streaming([
-      { type: 'text-delta', index, text: '{"decision":"allow","reasonCode":"read-only"}' },
+      { type: 'text-delta', index, text: benignAssessmentJson },
       { type: 'finish', reason: { kind: 'stop' } },
     ])
     const review = createLlmReviewer(llm, resolveLlmReviewerConfig({}))
@@ -156,7 +173,7 @@ describe('createLlmReviewer', () => {
   })
 
   it('hands missing routes, provider failures, and malformed output to a human', async () => {
-    const noRouteLlm = streaming(chunks('{"decision":"allow","reasonCode":"read-only"}'))
+    const noRouteLlm = streaming(chunks(benignAssessmentJson))
     await expect(createLlmReviewer(noRouteLlm, resolveLlmReviewerConfig({}))(payload, requestOf())).resolves.toBeNull()
     expect(noRouteLlm.seen).toHaveLength(0)
 
@@ -166,11 +183,11 @@ describe('createLlmReviewer', () => {
     }))
     await expect(createLlmReviewer(failed, resolveLlmReviewerConfig({}))(payload, requestOf({ provider: 'p', model: 'm' }))).resolves.toBeNull()
 
-    const malformed = streaming(chunks('```json\n{"decision":"allow","reasonCode":"read-only"}\n```'))
+    const malformed = streaming(chunks(`\`\`\`json\n${benignAssessmentJson}\n\`\`\``))
     await expect(createLlmReviewer(malformed, resolveLlmReviewerConfig({}))(payload, requestOf({ provider: 'p', model: 'm' }))).resolves.toBeNull()
 
     const truncated = streaming([
-      { type: 'text-delta', index: 0, text: '{"decision":"allow","reasonCode":"read-only"}' },
+      { type: 'text-delta', index: 0, text: benignAssessmentJson },
     ])
     await expect(createLlmReviewer(truncated, resolveLlmReviewerConfig({}))(payload, requestOf({ provider: 'p', model: 'm' }))).resolves.toBeNull()
   })

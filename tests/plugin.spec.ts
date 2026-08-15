@@ -41,6 +41,48 @@ function smartModeRequest(): ApprovalRequest {
   }
 }
 
+function smartWriteRequest(): ApprovalRequest {
+  const callId = CallId('call-smart-write')
+  const message: UserMessage = createUserMessage({
+    source: { kind: 'user' },
+    content: [{ type: 'text', text: '在 /work/other 创建 report.md' }],
+  })
+  const events = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, time: 2, data: { turn: 1, step: 1 } },
+    { type: 'user/message', seq: 2, time: 3, surfaceOp: 'append', data: message },
+    {
+      type: 'tool/call',
+      seq: 3,
+      time: 4,
+      data: {
+        turn: 1,
+        step: 1,
+        callId,
+        name: 'write',
+        arguments: JSON.stringify({
+          file_path: '/work/other/report.md',
+          content: '# Report\n',
+          sandbox_permissions: 'danger-full-access',
+          justification: 'Create the report requested by the user.',
+        }),
+      },
+    },
+  ] as unknown as SessionEvent[]
+  const session = {
+    id: 'session-smart-write',
+    events,
+    header: { id: 'session-smart-write', version: 0, createdAt: 1, cwd: '/work/main' },
+    deriveMessages: () => [message],
+    requestContext: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+  }
+  return {
+    agent: { session, options: {} } as unknown as Agent,
+    toolName: 'write',
+    callId,
+  }
+}
+
 function storageBench() {
   const rows = new Map<string, unknown>()
   const domain = {
@@ -60,7 +102,7 @@ function storageBench() {
 describe('plugin entry', () => {
   it('declares the DSH services needed by the prepended answerer', () => {
     expect(name).toBe('dsh-smart-approval')
-    expect(inject).toEqual(['approval', 'llm', 'sessions', 'storageDomain'])
+    expect(inject).toEqual(['approval', 'llm', 'sessions', 'storageDomain', 'fs'])
     expect(Config).toBeDefined()
     expect('default' in plugin).toBe(false)
   })
@@ -117,7 +159,7 @@ describe('plugin entry', () => {
       permissionPresets: { current: vi.fn(() => 'workspace-write') },
       llm: {
         stream: vi.fn(() => (async function* () {
-          yield { type: 'text-delta', index: 0, text: '{"decision":"allow","reasonCode":"bounded-build-test"}' }
+          yield { type: 'text-delta', index: 0, text: '{"riskLevel":"low","authorization":"high","intent":"benign","reasonCode":"bounded-build-test"}' }
           yield { type: 'finish', reason: { kind: 'stop' } }
         })()),
       },
@@ -128,6 +170,44 @@ describe('plugin entry', () => {
     const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
 
     await expect(listener?.(smartModeRequest(), next)).resolves.toBe('allowed-once')
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('uses the mounted DSH filesystem to review a safe cross-workspace write', async () => {
+    let listener: ((request: ApprovalRequest, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>) | undefined
+    const storage = storageBench()
+    const workspace = { displayPath: '/work/main', key: 'workspace' }
+    const target = { displayPath: '/work/other/report.md', key: 'target' }
+    const fs = {
+      resolve: vi.fn(async (path: string) => path === '/work/main' ? workspace : target),
+      processPath: vi.fn(() => '/work/other/report.md'),
+      contains: vi.fn(() => false),
+      stat: vi.fn(async () => undefined),
+      lstat: vi.fn(async () => undefined),
+    }
+    const ctx = {
+      on: vi.fn((event: string, callback: typeof listener) => {
+        if (event === 'approval/request') listener = callback
+      }),
+      inject: vi.fn(),
+      effect: storage.effect,
+      storageDomain: storage.storageDomain,
+      sessions: { list: vi.fn(() => []) },
+      fs,
+      llm: {
+        stream: vi.fn(() => (async function* () {
+          yield { type: 'text-delta', index: 0, text: '{"riskLevel":"low","authorization":"high","intent":"benign","reasonCode":"bounded-project-write"}' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()),
+      },
+      logger: { info: vi.fn(), warn: vi.fn() },
+    } as unknown as Context
+
+    await apply(ctx, {})
+    const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
+
+    await expect(listener?.(smartWriteRequest(), next)).resolves.toBe('allowed-once')
+    expect(fs.lstat).toHaveBeenCalledWith('/work/other/report.md', { cwd: '/work/main' }, undefined)
     expect(next).not.toHaveBeenCalled()
   })
 
