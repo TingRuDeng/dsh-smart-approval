@@ -1,6 +1,6 @@
 /** Fail-closed composition of mode selection, context extraction, and review. */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { Session } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import { preflightApproval, type ReviewerDecision } from './review-policy.ts'
 import { buildReviewPayload, type ReviewContextLimits, type ReviewPayload } from './review-context.ts'
@@ -18,8 +18,8 @@ export interface SmartApprovalLogRecord {
 
 /** Collaborators used by the approval waterfall listener. */
 export interface SmartApprovalHandlerOptions {
-  /** Resolve the independent automatic review mode from one session log. */
-  readonly currentMode: (events: readonly SessionEvent[]) => ReviewMode
+  /** Resolve the independent automatic review mode for one Session lifecycle. */
+  readonly currentMode: (session: Session) => ReviewMode
   /** Trusted-context limits. */
   readonly limits: ReviewContextLimits
   /** Review one prepared payload. A null result is an invalid/unavailable review. */
@@ -47,7 +47,7 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
   return async (request, next) => {
     let selectedMode: ReviewMode
     try {
-      selectedMode = options.currentMode(request.agent.session.events)
+      selectedMode = options.currentMode(request.agent.session)
     } catch {
       safeLog(options, { outcome: 'human', reasonCode: 'mode-error', toolName: request.toolName })
       return next()
@@ -102,7 +102,7 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
     }
     let currentMode: ReviewMode
     try {
-      currentMode = options.currentMode(request.agent.session.events)
+      currentMode = options.currentMode(request.agent.session)
     } catch {
       return rejectOrHandoff(selectedMode, 'mode-error', request, next, options)
     }

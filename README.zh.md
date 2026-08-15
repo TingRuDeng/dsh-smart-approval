@@ -45,7 +45,7 @@ Web 输入框底部应显示两个控件：
 
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.3
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.4
 dsh --profile web --dump-config
 dsh web
 ```
@@ -53,7 +53,7 @@ dsh web
 一次性运行：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.3
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.4
 npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
 npx @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -122,9 +122,11 @@ dsh plugin --profile web remove dsh-smart-approval
 不带参数的 `/approval-mode` 返回当前模式。访问权限仍使用 DSH 原生 `/permission` 命令，两套命令
 不会互相改写状态。
 
-新会话使用配置的 `defaultMode`，默认是 `smart`。从早期预览版升级时，尚无独立模式事件的旧会话
-会迁移一次：`smart-approval` 映射为 `smart`，`unattended` 映射为 `unattended`，其他旧权限预设映射为
-更保守的 `manual`。迁移不会修改原权限事件。
+尚未明确选择模式的会话使用配置的 `defaultMode`，默认是 `smart`。明确选择的模式保存在 DSH
+`storage-domain` 的会话伴随记录中；未选择的会话继续跟随当前默认值，确保修改配置后审批行为与
+浏览器投影一致。插件不会向不可移植的 Session 事件日志追加自定义事件。从早期预览版升级时，
+旧的 `smart-approval/mode` 事件只读迁移到伴随记录；更早的 `smart-approval` 与 `unattended` 权限
+preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事件。
 
 ## 工作原理
 
@@ -190,7 +192,8 @@ dsh plugin --profile web remove dsh-smart-approval
 | 路径 | 职责 |
 |---|---|
 | `src/index.ts` | 服务注入、旧会话迁移、投影、命令和生命周期 |
-| `src/review-mode.ts` | 独立模式事件、折叠、迁移映射和浏览器投影 |
+| `src/review-mode.ts` | 旧事件只读迁移、命令生命周期折叠和浏览器投影 |
+| `src/review-mode-storage.ts` | Session 生命周期绑定的自动审查模式伴随存储 |
 | `src/client/` | Web 端独立自动审查选择框和客户端插件注册 |
 | `src/approval-handler.ts` | 三模式路由、waterfall 决策和审核后模式复核 |
 | `src/review-context.ts` | 当前调用与当前 turn 上下文提取和最小化 |

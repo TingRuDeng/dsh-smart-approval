@@ -5,6 +5,7 @@ import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import { describe, expect, it, vi } from 'vitest'
 import * as plugin from '../src/index.ts'
+import { applyReviewModeEvent, initialReviewModeState } from '../src/review-mode.ts'
 
 const { Config, apply, inject, name } = plugin
 
@@ -27,8 +28,9 @@ function smartModeRequest(): ApprovalRequest {
     },
   ] as unknown as SessionEvent[]
   const session = {
+    id: 'session-smart-mode',
     events,
-    header: { cwd: '/work/main' },
+    header: { id: 'session-smart-mode', version: 0, createdAt: 1, cwd: '/work/main' },
     deriveMessages: () => [message],
     requestContext: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
   }
@@ -39,10 +41,26 @@ function smartModeRequest(): ApprovalRequest {
   }
 }
 
+function storageBench() {
+  const rows = new Map<string, unknown>()
+  const domain = {
+    close: vi.fn(async () => {}),
+    table: () => ({
+      get: (key: string) => rows.get(key),
+      put: async (key: string, value: unknown) => { rows.set(key, value) },
+    }),
+  }
+  return {
+    rows,
+    effect: vi.fn((factory: () => unknown) => factory()),
+    storageDomain: { open: vi.fn(async () => domain) },
+  }
+}
+
 describe('plugin entry', () => {
   it('declares the DSH services needed by the prepended answerer', () => {
     expect(name).toBe('dsh-smart-approval')
-    expect(inject).toEqual(['approval', 'permissionPresets', 'llm', 'sessions'])
+    expect(inject).toEqual(['approval', 'llm', 'sessions', 'storageDomain'])
     expect(Config).toBeDefined()
     expect('default' in plugin).toBe(false)
   })
@@ -50,6 +68,11 @@ describe('plugin entry', () => {
   it('registers ahead of the existing human answerer without reusing permission presets as review state', async () => {
     let listener: ((request: ApprovalRequest, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>) | undefined
     const current = vi.fn(() => 'workspace-write')
+    const storage = storageBench()
+    storage.rows.set('session-request', {
+      session: { createdAt: 1, cwd: '/work/main' },
+      mode: 'smart',
+    })
     const on = vi.fn((event: string, callback: typeof listener, options: unknown) => {
       if (event === 'session/created') return
       expect(event).toBe('approval/request')
@@ -59,16 +82,22 @@ describe('plugin entry', () => {
     const ctx = {
       on,
       inject: vi.fn(),
+      effect: storage.effect,
+      storageDomain: storage.storageDomain,
       sessions: { list: vi.fn(() => []) },
       permissionPresets: { current },
       llm: { stream: vi.fn() },
-      logger: { info: vi.fn() },
+      logger: { info: vi.fn(), warn: vi.fn() },
     } as unknown as Context
 
-    apply(ctx, {})
+    await apply(ctx, {})
     expect(on).toHaveBeenCalledTimes(2)
     const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
-    const request = { agent: { session: { events: [] } } } as unknown as ApprovalRequest
+    const request = { agent: { session: {
+      id: 'session-request',
+      header: { id: 'session-request', version: 0, createdAt: 1, cwd: '/work/main' },
+      events: [],
+    } } } as unknown as ApprovalRequest
     await expect(listener?.(request, next)).resolves.toBe('rejected')
     expect(current).not.toHaveBeenCalled()
     expect(next).toHaveBeenCalledOnce()
@@ -76,11 +105,14 @@ describe('plugin entry', () => {
 
   it('reads smart review mode independently from the workspace-write permission preset', async () => {
     let listener: ((request: ApprovalRequest, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>) | undefined
+    const storage = storageBench()
     const ctx = {
       on: vi.fn((event: string, callback: typeof listener) => {
         if (event === 'approval/request') listener = callback
       }),
       inject: vi.fn(),
+      effect: storage.effect,
+      storageDomain: storage.storageDomain,
       sessions: { list: vi.fn(() => []) },
       permissionPresets: { current: vi.fn(() => 'workspace-write') },
       llm: {
@@ -89,33 +121,86 @@ describe('plugin entry', () => {
           yield { type: 'finish', reason: { kind: 'stop' } }
         })()),
       },
-      logger: { info: vi.fn() },
+      logger: { info: vi.fn(), warn: vi.fn() },
     } as unknown as Context
 
-    apply(ctx, {})
+    await apply(ctx, {})
     const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
 
     await expect(listener?.(smartModeRequest(), next)).resolves.toBe('allowed-once')
     expect(next).not.toHaveBeenCalled()
   })
 
-  it('migrates existing preset modes and pins smart mode for new sessions', () => {
-    const listeners = new Map<string, (value: unknown) => void>()
+  it('migrates existing preset modes into sidecar storage without appending extension events', async () => {
+    const listeners = new Map<string, (value: unknown) => void | Promise<void>>()
     const existingEvents = [
       { type: 'permission/preset', seq: 0, time: 1, data: { preset: 'unattended' } },
     ] as unknown as SessionEvent[]
     const existing = {
+      id: 'session-existing',
+      header: { id: 'session-existing', version: 0, createdAt: 1, cwd: '/work/main' },
       events: existingEvents,
-      append: vi.fn((type: string, data: unknown) => {
-        existingEvents.push({ type, seq: existingEvents.length, time: 2, data } as unknown as SessionEvent)
-      }),
+      append: vi.fn(),
     }
+    const commandSelected = {
+      id: 'session-command-selected',
+      header: { id: 'session-command-selected', version: 0, createdAt: 2, cwd: '/work/main' },
+      events: [
+        {
+          type: 'command/run', seq: 0, time: 1,
+          data: {
+            commandId: 'command-migrated', name: 'approval-mode', args: ' manual', source: { kind: 'user' },
+          },
+        },
+        {
+          type: 'command/done', seq: 1, time: 2,
+          data: { commandId: 'command-migrated', kind: 'success', text: 'approval mode manual' },
+        },
+      ] as unknown as SessionEvent[],
+      append: vi.fn(),
+    }
+    const legacyEventSelected = {
+      id: 'session-legacy-event',
+      header: { id: 'session-legacy-event', version: 0, createdAt: 3, cwd: '/work/main' },
+      events: [
+        { type: 'smart-approval/mode', seq: 0, time: 1, data: { mode: 'manual' } },
+      ] as unknown as SessionEvent[],
+      append: vi.fn(),
+    }
+    const legacySmartPreset = {
+      id: 'session-legacy-smart-preset',
+      header: { id: 'session-legacy-smart-preset', version: 0, createdAt: 4, cwd: '/work/main' },
+      events: [
+        { type: 'permission/preset', seq: 0, time: 1, data: { preset: 'smart-approval' } },
+      ] as unknown as SessionEvent[],
+      append: vi.fn(),
+    }
+    const revertedLegacyPreset = {
+      id: 'session-reverted-legacy-preset',
+      header: { id: 'session-reverted-legacy-preset', version: 0, createdAt: 5, cwd: '/work/main' },
+      events: [
+        { type: 'permission/preset', seq: 0, time: 1, data: { preset: 'smart-approval' } },
+        { type: 'permission/preset', seq: 1, time: 2, data: { preset: 'workspace-write' } },
+      ] as unknown as SessionEvent[],
+      append: vi.fn(),
+    }
+    const rows = new Map<string, unknown>()
+    const domain = { close: vi.fn(async () => {}), table: () => ({
+      get: (key: string) => rows.get(key),
+      put: async (key: string, value: unknown) => { rows.set(key, value) },
+    }) }
     const ctx = {
-      on: vi.fn((event: string, callback: (value: unknown) => void) => {
+      on: vi.fn((event: string, callback: (value: unknown) => void | Promise<void>) => {
         listeners.set(event, callback)
       }),
       inject: vi.fn(),
-      sessions: { list: vi.fn(() => [existing]) },
+      effect: vi.fn((factory: () => unknown) => factory()),
+      storageDomain: { open: vi.fn(async () => domain) },
+      sessions: {
+        list: vi.fn(() => [
+          existing, commandSelected, legacyEventSelected, legacySmartPreset, revertedLegacyPreset,
+        ]),
+      },
       permissionPresets: {
         current: vi.fn((events: readonly SessionEvent[]) => {
           const preset = events.findLast(event => event.type === 'permission/preset')
@@ -123,33 +208,101 @@ describe('plugin entry', () => {
         }),
       },
       llm: { stream: vi.fn() },
-      logger: { info: vi.fn() },
+      logger: { info: vi.fn(), warn: vi.fn() },
     } as unknown as Context
 
-    apply(ctx, {})
-    expect(existing.append).toHaveBeenCalledWith('smart-approval/mode', { mode: 'unattended' })
+    await apply(ctx, {})
+    expect(rows.get('session-existing')).toEqual({
+      session: { createdAt: 1, cwd: '/work/main' },
+      mode: 'unattended',
+    })
+    expect(rows.get('session-command-selected')).toEqual({
+      session: { createdAt: 2, cwd: '/work/main' },
+      mode: 'manual',
+    })
+    expect(rows.get('session-legacy-event')).toEqual({
+      session: { createdAt: 3, cwd: '/work/main' },
+      mode: 'manual',
+    })
+    expect(rows.get('session-legacy-smart-preset')).toEqual({
+      session: { createdAt: 4, cwd: '/work/main' },
+      mode: 'smart',
+    })
+    expect(rows.get('session-reverted-legacy-preset')).toBeUndefined()
+    expect(existing.append).not.toHaveBeenCalled()
+    expect(commandSelected.append).not.toHaveBeenCalled()
+    expect(legacyEventSelected.append).not.toHaveBeenCalled()
+    expect(legacySmartPreset.append).not.toHaveBeenCalled()
+    expect(revertedLegacyPreset.append).not.toHaveBeenCalled()
 
-    const created = { events: [] as SessionEvent[], append: vi.fn() }
-    listeners.get('session/created')?.(created)
-    expect(created.append).toHaveBeenCalledWith('smart-approval/mode', { mode: 'smart' })
+    const created = {
+      id: 'session-created',
+      header: { id: 'session-created', version: 0, createdAt: 6, cwd: '/work/main' },
+      events: [] as SessionEvent[],
+      append: vi.fn(),
+    }
+    await listeners.get('session/created')?.(created)
+    expect(rows.get('session-created')).toBeUndefined()
+    expect(created.append).not.toHaveBeenCalled()
   })
 
-  it('registers an independent mode command and projection', () => {
+  it('projects a successful approval-mode command using only harness-known lifecycle events', () => {
+    const running = applyReviewModeEvent(
+      initialReviewModeState('smart'),
+      {
+        type: 'command/run', seq: 0, time: 1,
+        data: { commandId: 'command-mode', name: 'approval-mode', args: ' unattended', source: { kind: 'user' } },
+      } as unknown as SessionEvent,
+    )
+    const done = applyReviewModeEvent(
+      running,
+      {
+        type: 'command/done', seq: 1, time: 2,
+        data: { commandId: 'command-mode', kind: 'success', text: 'approval mode unattended' },
+      } as unknown as SessionEvent,
+    )
+
+    expect(done.mode).toBe('unattended')
+  })
+
+  it('does not project an approval-mode command whose sidecar write failed', () => {
+    const running = applyReviewModeEvent(
+      initialReviewModeState('smart'),
+      {
+        type: 'command/run', seq: 0, time: 1,
+        data: { commandId: 'command-failed', name: 'approval-mode', args: ' unattended', source: { kind: 'user' } },
+      } as unknown as SessionEvent,
+    )
+    const done = applyReviewModeEvent(
+      running,
+      {
+        type: 'command/done', seq: 1, time: 2,
+        data: { commandId: 'command-failed', kind: 'error', text: 'storage failed' },
+      } as unknown as SessionEvent,
+    )
+
+    expect(done.mode).toBe('smart')
+  })
+
+  it('registers an independent mode command and projection', async () => {
     let command: {
       name: string
-      handler: (input: { agent: Agent; rawInput: string }) => { kind: string; text: string }
+      handler: (input: { agent: Agent; rawInput: string }) => Promise<{ kind: string; text: string }>
     } | undefined
     let projection: {
       init: () => unknown
       apply: (state: unknown, event: SessionEvent) => unknown
       view: (state: unknown) => unknown
     } | undefined
+    const storage = storageBench()
     const ctx = {
       on: vi.fn(),
+      effect: storage.effect,
+      storageDomain: storage.storageDomain,
       sessions: { list: vi.fn(() => []) },
       permissionPresets: { current: vi.fn(() => 'workspace-write') },
       llm: { stream: vi.fn() },
-      logger: { info: vi.fn() },
+      logger: { info: vi.fn(), warn: vi.fn() },
       inject: vi.fn((services: readonly string[], callback: (scope: unknown) => void) => {
         if (services.includes('commands')) {
           callback({ commands: { register: (value: typeof command) => { command = value } } })
@@ -160,7 +313,7 @@ describe('plugin entry', () => {
       }),
     } as unknown as Context
 
-    apply(ctx, {})
+    await apply(ctx, {})
     expect(command?.name).toBe('approval-mode')
     expect(projection?.view(projection.init())).toEqual({ mode: 'smart' })
 
@@ -168,16 +321,19 @@ describe('plugin entry', () => {
       { type: 'smart-approval/mode', seq: 0, time: 1, data: { mode: 'smart' } },
     ] as unknown as SessionEvent[]
     const session = {
+      id: 'session-command',
+      header: { id: 'session-command', version: 0, createdAt: 1, cwd: '/work/main' },
       events,
-      append: vi.fn((type: string, data: unknown) => {
-        events.push({ type, seq: events.length, time: 2, data } as unknown as SessionEvent)
-      }),
+      append: vi.fn(),
     }
-    const result = command?.handler({ agent: { session } as unknown as Agent, rawInput: 'manual' })
+    const result = await command?.handler({ agent: { session } as unknown as Agent, rawInput: 'manual' })
 
     expect(result).toEqual({ kind: 'success', text: 'approval mode manual' })
-    expect(session.append).toHaveBeenCalledWith('smart-approval/mode', { mode: 'manual' })
-    expect(projection?.view(projection.apply(projection.init(), events.at(-1) as SessionEvent))).toEqual({ mode: 'manual' })
+    expect(storage.rows.get('session-command')).toEqual({
+      session: { createdAt: 1, cwd: '/work/main' },
+      mode: 'manual',
+    })
+    expect(session.append).not.toHaveBeenCalled()
   })
 
   it('fails at load when only half of a dedicated reviewer route is configured', () => {

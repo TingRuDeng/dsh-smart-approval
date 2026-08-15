@@ -50,7 +50,7 @@ After installing the DSH CLI globally:
 
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.3
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.4
 dsh --profile web --dump-config
 dsh web
 ```
@@ -58,7 +58,7 @@ dsh web
 For one-off execution:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.3
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.4
 npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
 npx @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -134,11 +134,15 @@ the current session:
 continues to use DSH's native `/permission` command; the two command families do
 not rewrite each other's state.
 
-New sessions use `defaultMode`, which defaults to `smart`. During an upgrade
-from an earlier preview, an old session without an independent mode event is
-migrated once: `smart-approval` maps to `smart`, `unattended` maps to
-`unattended`, and every other legacy permission preset maps to the safer
-`manual`. Migration does not modify permission events.
+Sessions without an explicit selection use `defaultMode`, which defaults to
+`smart`. Explicit selections are stored as a Session-bound `storage-domain`
+sidecar; an unselected session continues to follow the configured default so
+the host decision and browser projection stay aligned after configuration
+changes. The plugin never appends a non-portable event to the Session log.
+During an upgrade from an earlier preview, legacy `smart-approval/mode` events
+are read only for one-way sidecar migration; older `smart-approval` and
+`unattended` permission presets migrate to `smart` and `unattended`. Migration
+does not modify permission events.
 
 ## How it works
 
@@ -225,7 +229,8 @@ profile's existing permission presets.
 | Path | Responsibility |
 |---|---|
 | `src/index.ts` | Service injection, legacy migration, projection, command, and lifecycle |
-| `src/review-mode.ts` | Independent mode event, fold, migration map, and browser projection |
+| `src/review-mode.ts` | Legacy-event migration, command lifecycle fold, and browser projection |
+| `src/review-mode-storage.ts` | Session-lifecycle-bound automatic-review mode sidecar |
 | `src/client/` | Web selector and browser-plugin registration |
 | `src/approval-handler.ts` | Three-mode routing, waterfall decisions, and post-review mode recheck |
 | `src/review-context.ts` | Current-call and current-turn context extraction/minimization |

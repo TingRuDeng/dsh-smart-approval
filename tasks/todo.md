@@ -311,3 +311,64 @@
   特征扫描无匹配；生产依赖审计未发现已知漏洞。未把隔离环境、截图或本机绝对路径打入发布包。
 - 剩余风险：未使用真实 reviewer provider 验证模型调用，也未验收实际人工 answerer 的交互；
   这两项依赖部署凭据和具体运行环境，不阻止本次 UI/状态解耦修复。
+
+---
+
+## 2026-08-15 会话事件兼容性修复
+
+### 目标
+
+停止把自动审查模式写入 DSH 会话事件日志，改用 `storage-domain` 会话伴随存储；修复
+`smart-approval/mode` 未标记为 ignorable 导致历史会话拒绝加载的问题，并安全恢复已受影响会话。
+
+### 范围
+
+- 将审批模式的权威状态迁移到独立的 storage-domain sidecar，按 Session 生命周期隔离。
+- 保留对既有 `smart-approval/mode` 事件和旧权限 preset 的只读迁移能力，不再追加该事件。
+- 使用 DSH 已知的 `command/run`/`command/done` 生命周期更新浏览器投影，失败命令不得改变投影。
+- 增加回归测试并同步中英文文档、依赖、版本和锁文件。
+- 发布修复版本、显式安装到本机 `web` profile，再备份并精确修复目标压缩日志中的 `seq 19216`。
+
+### 不在范围内
+
+- 修改 DeepSeek Harness 核心已知事件表或会话格式。
+- 删除、重排或改写目标会话中的其他事件。
+- 扫描或批量修改其他会话日志。
+
+### 验收标准
+
+- [x] 新建会话和 `/approval-mode` 切换都不再追加 `smart-approval/mode`。
+- [x] sidecar 持久化并恢复 `manual | smart | unattended`，且 Session id 复用时不会继承旧生命周期状态。
+- [x] 成功命令更新 `approvalReview` 投影；失败或无效命令不更新。
+- [x] 既有 ignorable `smart-approval/mode` 与旧 `smart-approval`/`unattended` preset 可迁移到 sidecar。
+- [x] 单元测试、类型检查、构建、打包、隔离 DSH profile 和真实 Web Loader 验证通过。
+- [ ] 修复版本提交、推送并发布，npm `latest`/`next` 均指向修复版本，本机 profile 安装该明确版本。
+- [ ] 原始日志有权限为 `0600` 的逐文件备份，备份 SHA-256 等于修复前文件。
+- [ ] 修复后日志仅在 `seq 19216` 增加 `ignorable: true`，zstd 与 JSONL 校验通过，Web 能加载历史。
+- [ ] 恢复后审批模式仍为 `smart`，且再次切换不会产生新的未知事件。
+
+### 实施步骤
+
+- [x] 先以失败测试固定 sidecar、命令投影和“零自定义事件写入”行为。
+- [x] 实现 storage-domain 模式存储、启动迁移、异步命令写入和审批读取。
+- [x] 调整投影折叠、客户端交互、依赖、版本及中英文文档。
+- [x] 执行完整本地与隔离 DSH 验证，并做敏感信息和发布包复核。
+- [ ] 提交、推送、等待 GitHub CI 成功，发布 npm 修复版本并更新 dist-tags。
+- [ ] 将本机 web profile 更新到明确修复版本并停止 DSH 写入进程。
+- [ ] 备份、精确修复目标日志，完成结构差异、校验和与 Web 历史验收。
+
+### 验证方式
+
+- `node node_modules/vitest/vitest.mjs run`
+- `node node_modules/typescript/bin/tsc --noEmit`
+- `node node_modules/tsdown/dist/run.mjs`
+- `npm pack --dry-run --ignore-scripts`
+- 隔离 `DSH_HOME` 安装打包产物并启动 Web Loader，确认 sidecar 与客户端入口加载。
+- 对修复前后解压记录做结构化逐事件比较，断言唯一差异为目标事件的 `ignorable` 字段。
+- 用真实 `web` profile 加载目标 Session，并检查 sidecar 模式与新增事件类型。
+
+### 回滚
+
+- 源码和发布前改动可按本任务提交整体回退；已发布 npm 版本不删除，改发更高修复版本。
+- 本机 profile 可显式重装上一个版本，但在旧版本下不得切换审批模式。
+- 会话修复可在 DSH 停止状态下用校验和一致的 `.bak` 文件原子恢复；sidecar 数据与原会话日志分离。
