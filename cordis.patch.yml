@@ -1,0 +1,33 @@
+# Adds three workspace-write approval modes and mounts the answerer. The permission row
+# is restated in full because DSH patch layers replace, rather than deep-merge,
+# a row's config value.
+
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+        name: Workspace Write · Manual
+        description: Send every approval request to the existing human approval channel.
+      smart-approval:
+        sandbox: workspace-write
+        approval: ask
+        name: Workspace Write · Smart
+        description: Recommended. Allow safe requests once, ask a human about high-risk or uncertain requests, and reject clearly malicious requests.
+      unattended:
+        sandbox: workspace-write
+        approval: ask
+        name: Workspace Write · Unattended
+        description: Allow safe requests once and reject every other request without opening a human prompt.
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: smart-approval
+
+- insert:
+    - id: smart-approval
+      name: dsh-smart-approval
