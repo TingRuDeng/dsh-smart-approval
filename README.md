@@ -1,41 +1,78 @@
 # dsh-smart-approval
 
-`dsh-smart-approval` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的三模式审批插件。在相同的 Workspace Write 沙箱范围内，它提供人工审批、智能审批和无人值守三个档位；智能审批是推荐默认值。
+English | [中文](README.zh.md)
 
-默认复用当前会话正在使用的 provider/model，不需要单独配置模型。切换审批模式不需要重启 DSH。
+`dsh-smart-approval` is a fail-closed approval plugin for
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It adds
+three approval modes on top of the same `workspace-write` sandbox: manual,
+smart, and unattended. Smart approval is the recommended default.
 
-| 模式 | 安全请求 | 高风险或不确定 | 明确恶意 |
+The plugin reuses the current session's provider and model unless an independent
+review route is configured. Switching modes takes effect on the next approval
+request and does not require restarting DSH.
+
+> [!WARNING]
+> This project and DSH are both in developer preview. Review the security
+> boundaries below and pin exact versions in reproducible environments.
+
+## Approval modes
+
+| Mode | Safe request | High-risk or uncertain | Clearly malicious |
 |---|---|---|---|
-| Workspace Write · Manual | 转人工 | 转人工 | 转人工 |
-| Workspace Write · Smart（推荐默认） | 自动通过一次 | 转人工 | 直接拒绝 |
-| Workspace Write · Unattended | 自动通过一次 | 直接拒绝 | 直接拒绝 |
+| Workspace Write · Manual | Ask a human | Ask a human | Ask a human |
+| Workspace Write · Smart (recommended) | Allow once | Ask a human | Reject |
+| Workspace Write · Unattended | Allow once | Reject | Reject |
 
-三个模式的 DSH 配置均为 `sandbox: workspace-write` 与 `approval: ask`。`ask` 是让授权申请进入审批 waterfall 的必要条件；最终是转人工还是直接拒绝，由插件根据当前模式决定。人工审批模式下插件只解析当前 preset 后立即旁路，不读取工具或用户授权上下文，也不调用审核模型。
+All three modes use `sandbox: workspace-write` and `approval: ask`. The `ask`
+setting sends approval requests through DSH's `approval/request` waterfall;
+this plugin then decides whether to allow once, delegate to the next human
+answerer, or reject. Manual mode bypasses the reviewer immediately and does not
+read tool arguments or user authorization context.
 
-## 工作方式
+## Install
 
-插件作为 `approval/request` waterfall 的前置 answerer：
+### Requirements
 
-1. 从会话日志按 `callId` 读取真实 `tool/call` 参数；目前只自动审核 DSH 的 `bash` 和 `pwsh`，其他工具按当前模式转人工或拒绝。
-2. 只提取当前工具调用所属 turn 中 `source.kind === "user"` 的直接用户纯文本作为授权上下文；旧轮次消息、Assistant 消息、工具输出和申请理由不构成授权。消息数量或字符数超限、含图片或其他非文本块时不截断上下文，按当前模式转人工或拒绝。
-3. 审核载荷只保留实际影响 shell 执行的 `command`、`timeoutMs`、`workdir`、`run_in_background` 和 `sandbox_permissions`；模型生成的 `description`、`justification` 不发送，未知参数按当前模式转人工或拒绝。
-4. 工作区根目录、有效工作目录、凭据、明显破坏性命令、系统变更、后台运行、依赖安装、发布、远程写入或数据上传会在调用审核模型前被识别为非安全请求；智能模式转人工，无人值守模式直接拒绝。
-5. 审核模型只能返回严格的双字段 JSON：`allow` 表示安全，`human` 表示高风险或不确定，`reject` 只表示凭据外传、绕过安全控制、明确违反用户边界或未授权远程写入等明确恶意行为。
-6. 只有合法 `allow` 会映射为 `allowed-once`。智能模式下 `human`、超时、异常或非法输出调用 `next()`；无人值守模式下这些情况全部直接拒绝。智能和无人值守模式下的 `reject` 都直接拒绝；人工模式不会调用审核模型。
+- Node.js 24 or later.
+- DeepSeek Harness `>=0.1.0-rc.5 <0.2.0`.
+- `pnpm` on `PATH`; DSH forwards plugin-management operations to pnpm.
 
-插件不修改会话的永久权限，也不会自动把会话切换到 `danger-full-access`。
+The currently published plugin version is `0.1.0-rc.1`. Install it with an
+already-installed DSH CLI:
 
-## 本地安装
+```sh
+npm install --global @deepseek-ai/dsh@0.1.0-rc.6
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.1
+dsh --profile web --dump-config
+dsh web
+```
 
-先安装 DSH，然后在本仓库目录执行：
+For a one-off DSH invocation, follow the upstream `npx` form:
+
+```sh
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.1
+npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
+npx @deepseek-ai/dsh@0.1.0-rc.6 web
+```
+
+`npm dsh ...` is not a valid npm command. Use `dsh ...` after a global install,
+`npx @deepseek-ai/dsh ...` for a one-off invocation, or `pnpm dsh ...` from a
+DeepSeek Harness source checkout.
+
+The DSH plugin command accepts an exact npm package version. Therefore
+`dsh plugin --profile web add dsh-smart-approval@0.1.0` will work after version
+`0.1.0` is published; it does not work today because that version is not yet in
+the npm registry.
+
+### Install from a checkout or GitHub
+
+From this repository:
 
 ```sh
 dsh plugin --profile web add .
-dsh --profile web --dump-config
-dsh --profile web
 ```
 
-使用 DSH 源码 checkout 时，在 DSH 仓库根目录运行等价命令：
+From a DeepSeek Harness source checkout:
 
 ```sh
 pnpm dsh plugin --profile web add /absolute/path/to/dsh-smart-approval
@@ -43,31 +80,79 @@ pnpm dsh --profile web --dump-config
 pnpm dsh --profile web
 ```
 
-从 GitHub 安装时应固定 commit：
+From GitHub, pin a reviewed commit:
 
 ```sh
 dsh plugin --profile web add github:TingRuDeng/dsh-smart-approval#<commit-sha>
 ```
 
-Git 依赖会运行本包的 `prepare` 构建脚本。pnpm 10 及以上默认阻止该脚本，首次安装时应按 DSH 输出的提示，把精确包名加入对应 profile 的 `pnpm-workspace.yaml` `allowBuilds`，审核源码后再重试安装。
+Git dependencies run this package's `prepare` build. pnpm 10 and later block
+dependency build scripts by default. On the first Git install, follow DSH's
+message to add the exact package name to the profile's `pnpm-workspace.yaml`
+`allowBuilds`, review the source, and retry. Registry packages already contain
+the built output and do not need this Git-build allowance.
 
-### 权限预设合并注意
+### Verify or remove
 
-DSH 当前的 bundle patch 会替换目标行的整个 `config`，不能只追加一个 preset。因此本插件会完整重述 `permission` 行中的 `read-only`、`workspace-write`、`smart-approval`、`unattended` 和 `danger-full-access`，并把 `smart-approval` 设为默认值。如果你的 profile 已自定义权限预设或默认预设，请在安装后通过 profile 自己的 `cordis.patch.yml` 重述并合并这些配置；该用户层优先于 bundle。启动前用 `dsh --profile <name> --dump-config` 核对最终结果。
+The config dump should list `dsh-smart-approval` in the profile bundle stack,
+the `smart-approval` plugin row, and the three Workspace Write presets:
 
-## 使用与热切换
+```sh
+dsh --profile web --dump-config
+```
 
-DSH 当前只提供一个平铺的 Permissions 选择器，因此三个 Workspace Write 模式使用统一前缀相邻展示。可以在 Web 中选择对应项，也可以在当前会话输入对应命令：
+Remove the plugin with:
 
-- 人工审批：`/permission workspace-write`
-- 智能审批：`/permission smart-approval`
-- 无人值守：`/permission unattended`
+```sh
+dsh plugin --profile web remove dsh-smart-approval
+```
 
-插件每次申请都从当前会话日志读取预设，因此下一次权限申请立即使用新模式，不要求重启 DSH。若未来 DSH 支持把沙箱范围和审批策略拆成两个控件，可在不改变本插件决策矩阵的前提下调整展示方式。
+## Use and switch modes
 
-## 可选独立审核模型
+DSH currently exposes one flat Permissions selector, so the three Workspace
+Write choices share a prefix and appear next to each other. Select one in the
+Web UI or run the corresponding command in the current session:
 
-不配置时复用当前会话模型。若希望使用单独模型，在 profile 的 `cordis.patch.yml` 中覆盖插件行；provider/model 必须成对配置：
+- Manual approval: `/permission workspace-write`
+- Smart approval: `/permission smart-approval`
+- Unattended: `/permission unattended`
+
+The plugin reads the current preset for every approval request. A mode change
+therefore applies immediately to the next request.
+
+## How it works
+
+The plugin is an early answerer in DSH's `approval/request` waterfall:
+
+1. It resolves the real `tool/call` event by `callId`. Only DSH `bash` and
+   `pwsh` calls have an automatic-review contract; other tools are delegated or
+   rejected according to the selected mode.
+2. It uses only direct, plain-text user messages from the current turn as
+   authorization context. Earlier turns, assistant messages, tool output, and
+   the model-written approval reason do not grant authority.
+3. It sends only shell fields that affect execution: `command`, `timeoutMs`,
+   `workdir`, `run_in_background`, and `sandbox_permissions`. Unknown fields,
+   images, non-text content, or over-limit context fail closed without
+   truncation.
+4. Deterministic checks run before the model. Credential access, destructive
+   commands, system changes, background work, dependency installation,
+   publishing, remote writes, data upload, and sensitive workspace/workdir
+   conditions are never classified as automatically safe.
+5. The reviewer must return strict two-field JSON. `allow` means safe, `human`
+   means high-risk or uncertain, and `reject` is reserved for clearly malicious
+   behavior such as credential exfiltration, bypassing a safety control, or an
+   unauthorized remote write.
+6. Only a valid `allow` becomes `allowed-once`. Timeouts, exceptions, malformed
+   output, incomplete context, and a preset change during review all fail
+   closed according to the active mode.
+
+The plugin never grants permanent permission and never switches a session to
+`danger-full-access`.
+
+## Configuration
+
+By default, the current session route performs the review. To use an independent
+route, override the plugin row in the profile's `cordis.patch.yml`:
 
 ```yaml
 - id: smart-approval
@@ -78,39 +163,96 @@ DSH 当前只提供一个平铺的 Permissions 选择器，因此三个 Workspac
     maxTokens: 128
 ```
 
-可用配置：
+`reviewerProvider` and `reviewerModel` must be configured together.
 
-| 字段 | 默认值 | 作用 |
+| Field | Default | Purpose |
 |---|---:|---|
-| `preset` | `smart-approval` | 激活智能审批的权限预设名 |
-| `unattendedPreset` | `unattended` | 激活无人值守审批的权限预设名；不能与 `preset` 相同 |
-| `reviewerProvider` / `reviewerModel` | 当前会话路由 | 可选独立审核模型，必须同时提供 |
-| `timeoutMs` | `15000` | 整个审核调用的强制期限 |
-| `maxTokens` | `128` | 审核输出上限 |
-| `maxToolArgumentChars` | `12000` | 工具参数上限；超出后按模式转人工或拒绝，不截断 |
-| `maxUserMessages` | `4` | 当前 turn 直接用户消息数上限；超出后按模式转人工或拒绝，不截断 |
-| `maxUserContextChars` | `8000` | 用户上下文上限；超出后按模式转人工或拒绝，不截断 |
+| `preset` | `smart-approval` | Permission preset that enables smart review |
+| `unattendedPreset` | `unattended` | Permission preset that enables unattended review; must differ from `preset` |
+| `reviewerProvider` / `reviewerModel` | Current session route | Optional independent reviewer route; configure as a pair |
+| `timeoutMs` | `15000` | Hard deadline for the complete review call |
+| `maxTokens` | `128` | Maximum reviewer output |
+| `maxToolArgumentChars` | `12000` | Tool-argument limit; overflow fails closed without truncation |
+| `maxUserMessages` | `4` | Direct current-turn user-message limit |
+| `maxUserContextChars` | `8000` | User-context limit; overflow fails closed without truncation |
 
-如果配置独立审核模型，session 的工作区根目录、最小化后的 shell 执行参数和当前 turn 的直接用户纯文本会发送给该 provider。请按数据敏感级别选择可信服务。默认复用当前会话模型只是部署便利，不构成独立安全复核；对 `danger-full-access` 等高权限场景，建议配置独立、受控的审核路由。
+### Permission preset merge warning
 
-## 跨目录场景
+DSH bundle patches replace the target row's complete `config`; they do not
+deep-merge individual keys. This bundle therefore restates the entire
+`permission` row and makes `smart-approval` the default. If the profile already
+customizes permission presets or the default preset, restate and merge them in
+the profile's own `cordis.patch.yml`, which has higher precedence. Always inspect
+the final tree with `dsh --profile <name> --dump-config` before launch.
 
-当前 DSH 的 `workspace-write` 沙箱只有一个工作区根目录。访问另一个项目时，工具通常会为该次调用申请 `danger-full-access`。插件可以在用户消息明确授权另一个项目、且具体命令只是读取、构建、测试或边界清晰的开发写入时批准这一次调用；删除、安装、系统操作、远程写入等在智能模式转人工、无人值守模式拒绝。
+## Model and data boundary
 
-这不是多目录沙箱：一次 `danger-full-access` 调用在执行期间仍拥有宽文件权限。插件降低重复点击，但不能提供官方多工作区或多个可写根目录相同的强隔离。需要严格目录隔离时，应继续人工审批，或等待 DSH 提供多工作区接口。
+Manual mode invokes no reviewer. In smart and unattended modes, the selected
+review provider receives the workspace root, minimized shell execution fields,
+and direct plain-text user messages from the current turn. It does not receive
+assistant messages, tool results, approval descriptions, justifications,
+unknown tool fields, or stored model reasoning.
 
-## 安全边界
+Using the current session model is convenient, but it is not an independent
+security review. For sensitive deployments, configure a separate controlled
+provider route and evaluate its data-handling policy.
 
-- 只有经过 DSH 审批通道的请求会被审核；本来不触发审批的网络和远程操作不由本插件拦截。
-- 模型判断不是安全证明。固定前检会扫描 shell 执行参数、工作区和当前 turn 的用户上下文，但命令匹配无法穷尽所有 shell/PowerShell 表达方式；未知或有歧义的请求在智能模式必须转人工、无人值守模式必须拒绝。
-- 当前仅为 `bash`/`pwsh` 建立了明确参数契约；未知工具、未知参数、后台命令和非纯文本授权上下文在智能模式转人工、无人值守模式直接拒绝。
-- 自动授权仅对当前调用有效；插件不保存目录白名单或永久授权。
-- 日志只记录工具名、结果和短原因码，不记录完整提示、参数、凭据或模型推理。
-- 智能模式的人工回退和人工审批模式需要 profile 中存在 Web、ACP 或其他 approval answerer；没有人工渠道时 DSH 保持 fail-closed。无人值守模式不打开人工提示。
+## Cross-directory requests
 
-## 开发
+DSH currently gives `workspace-write` one workspace root. Accessing another
+project normally triggers a one-time `danger-full-access` request. The plugin
+may allow that call when the current user message explicitly authorizes the
+other project and the command is limited to reading, building, testing, or a
+clearly bounded development write. Deletion, dependency installation, system
+changes, publishing, remote writes, and similar operations are delegated in
+smart mode and rejected in unattended mode.
 
-开发和运行需要 Node.js 24 或更高版本。
+This is not a multi-root sandbox: an allowed `danger-full-access` process still
+has broad filesystem authority for that call. Use manual approval when strict
+directory isolation is required.
+
+## Security boundaries
+
+- Only requests that already enter DSH's approval channel can be reviewed.
+  Network or remote operations that do not trigger approval are outside this
+  plugin's control.
+- Model classification is not a security proof. Deterministic checks cover
+  known high-risk forms, but no shell or PowerShell pattern matcher is complete.
+- Unknown tools, unknown arguments, background execution, non-text context, and
+  incomplete context fail closed: smart mode asks a human; unattended mode
+  rejects.
+- Every automatic approval is one-time. The plugin stores no directory
+  allowlist or permanent grant.
+- Logs contain the tool name, outcome, and short reason code, not full prompts,
+  arguments, credentials, or model reasoning.
+- Smart fallback and manual mode require another Web, ACP, or custom human
+  approval answerer. Without one, DSH remains fail-closed. Unattended mode never
+  opens a human prompt.
+- DSH currently has one `workspace-write` root. A one-time
+  `danger-full-access` approval still has broad filesystem authority; this
+  plugin does not turn it into a multi-root sandbox.
+
+## Repository map for maintainers and agents
+
+| Path | Responsibility |
+|---|---|
+| `src/index.ts` | Plugin configuration, service injection, and lifecycle |
+| `src/approval-handler.ts` | Preset routing, waterfall decisions, and post-review preset recheck |
+| `src/review-context.ts` | Current-call and current-turn context extraction/minimization |
+| `src/review-policy.ts` | Deterministic fail-closed prechecks |
+| `src/llm-reviewer.ts` | Reviewer prompt, streaming parser, strict verdict protocol, and timeout |
+| `cordis.patch.yml` | DSH bundle layer, plugin row, and permission presets |
+| `tests/*.spec.ts` | Approval, context, policy, protocol, and bundle regression contracts |
+
+Behavioral invariants to preserve:
+
+- Missing or ambiguous evidence never becomes an automatic allow.
+- Only direct user text from the same turn can establish authorization.
+- Only strict `allow` can return `allowed-once`.
+- Manual mode must not inspect approval content or call a model.
+- A preset change while review is in flight must invalidate automatic approval.
+
+## Development
 
 ```sh
 pnpm install
@@ -120,8 +262,12 @@ pnpm run build
 pnpm pack --dry-run
 ```
 
-当前兼容范围为 DSH `>=0.1.0-rc.5 <0.2.0`：已在 GitHub `master` 的 rc.5 源码上完成 Loader/UI 组合验证，并使用 npm rc.6 依赖完成测试、类型检查和构建。DSH 尚处于预发布阶段，升级后应重新运行真实 profile 组合验证。
+The supported DSH range is `>=0.1.0-rc.5 <0.2.0`. The published plugin has been
+installed into an isolated real DSH profile, and the composed config contains
+the bundle, plugin row, and all three presets. A real-provider end-to-end review
+and Web/ACP human-fallback interaction still depend on deployment credentials
+and environment-specific acceptance testing.
 
 ## License
 
-MIT
+[MIT](LICENSE)
