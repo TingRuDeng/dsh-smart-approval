@@ -241,3 +241,73 @@
 - 验证：`pnpm run check` 退出 0，4 个测试文件共 100 个测试通过；类型检查与 tsdown 构建通过；`pnpm audit --prod` 未发现已知漏洞；`pnpm pack --dry-run` 通过且包内仅 8 个预期文件。
 - 远端状态（本地准备完成时）：计划使用 `TingRuDeng/dsh-smart-approval`；当时 GitHub 仓库尚未创建且 npm 未登录，因此该阶段未执行推送或发布。
 - GitHub 跟进：公开仓库创建后首次 CI 全部通过，但 v4 Action 触发 Node 20 运行时弃用警告；已将 checkout、setup-node 和 pnpm/action-setup 更新为官方 Node 24 release 的固定提交 SHA，需以更新提交的远端 CI 终态为准。
+
+---
+
+## 2026-08-15 独立自动审查选择框
+
+### 目标
+
+修复把自动审查模式错误建模为三个 Workspace Write 权限预设的问题，在输入框中把访问权限与自动审查拆成两个独立选择框，并保持智能审批为默认值。
+
+### 范围
+
+- 恢复 Read Only、Workspace Write、Full access 三个原生权限预设。
+- 新增按会话持久化的人工审批、智能审批、无人值守状态及切换命令。
+- 新增浏览器端插件，通过 `conversation.input.left` 在访问权限旁边显示独立自动审查选择框。
+- 让审批处理器只读取独立审查状态，不再把 permission preset 当作审查模式。
+- 为旧版 `smart-approval`、`unattended` preset 会话保留一次迁移语义。
+- 同步中英文文档、包清单和发布说明。
+
+### 不在范围内
+
+- 修改 DeepSeek Harness 核心源码。
+- 改变既有三模式安全决策矩阵。
+- 扩展非 `approval/request` 操作的拦截范围。
+
+### 验收标准
+
+- [x] Permissions 菜单只显示 Read Only、Workspace Write、Full access。
+- [x] 输入框中独立显示人工审批、智能审批、无人值守选择框，默认智能审批。
+- [x] 切换权限不改变自动审查模式，切换自动审查模式不改变权限。
+- [x] 三模式行为和审核期间切换的失败关闭语义保持不变。
+- [x] 旧版 preset 会话可映射到对应独立审查模式。
+- [x] 单元测试、客户端组件测试、类型检查、构建、打包和真实 DSH Web 组合验证通过。
+
+### 实施步骤
+
+- [x] 先以失败测试固定独立模式折叠、切换、迁移和审批路由行为。
+- [x] 实现主机端会话事件、投影、命令和审批模式读取。
+- [x] 先以失败测试固定独立选择框渲染与切换行为，再实现浏览器端插件。
+- [x] 恢复权限 preset 配置并更新构建、依赖和发布清单。
+- [x] 更新中英文 README，执行完整验证和交付前复核。
+
+### 验证方式
+
+- `pnpm test`
+- `pnpm run typecheck`
+- `pnpm run build`
+- `npm pack --dry-run --ignore-scripts`
+- 安装本地包到隔离 DSH profile，验证配置、插件图、HTTP 页面和浏览器双选择框。
+
+### 回滚
+
+- 回退本节涉及的会话状态、客户端入口、bundle patch、依赖、测试和文档。
+- 运行时可移除插件，原生权限预设及审批链继续工作；不迁移或删除既有会话事件。
+
+### Review
+
+- 根因修复：bundle 不再覆盖 `permission` 行；自动审查改由独立的
+  `smart-approval/mode` 会话事件、`approvalReview` 投影和 `/approval-mode` 命令管理。
+- 浏览器集成：`conversation.input.left` 新增独立选择框；发布包新增 `dsh.client` 入口和
+  `lib/client.js`，版本提升至 `0.1.0-rc.3`。
+- 自动化验证：Vitest 6 个测试文件共 105 项通过；`tsc --noEmit`、主机/浏览器双入口
+  tsdown 构建、`npm pack --dry-run --ignore-scripts` 均退出 0；干跑包共 11 个预期文件。
+- DSH 组合验证：在干净的 DSH `47f943859bef60e4160492346772ded9b24f765a`
+  （CLI `0.1.0-rc.5`）隔离 profile 中安装本地包。配置只含三项原生权限，启动页加载
+  `dsh-smart-approval/client.js`；无头 Chrome 确认智能审批默认值、两个选择器双向互不改写，
+  权限菜单仅为 Read Only、Workspace Write、Full access，控制台无错误。
+- 安全复核：当前树与完整 Git 历史的私钥、常见云凭据、GitHub/npm token 和 Bearer token
+  特征扫描无匹配；生产依赖审计未发现已知漏洞。未把隔离环境、截图或本机绝对路径打入发布包。
+- 剩余风险：未使用真实 reviewer provider 验证模型调用，也未验收实际人工 answerer 的交互；
+  这两项依赖部署凭据和具体运行环境，不阻止本次 UI/状态解耦修复。

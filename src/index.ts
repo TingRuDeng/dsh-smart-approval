@@ -4,12 +4,17 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-permission-presets'
+import type {} from '@deepseek-ai/dsh-commands'
+import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { createSmartApprovalHandler } from './approval-handler.ts'
 import { createLlmReviewer, resolveLlmReviewerConfig } from './llm-reviewer.ts'
+import {
+  applyReviewModeEvent, DEFAULT_REVIEW_MODE, effectiveReviewMode, legacyReviewMode,
+  REVIEW_MODES, reviewModeProjectionSchema, selectedReviewMode, setReviewMode,
+} from './review-mode.ts'
+import type { ReviewMode, ReviewModeProjection } from './review-mode.ts'
 
-const DEFAULT_PRESET = 'smart-approval'
-const DEFAULT_UNATTENDED_PRESET = 'unattended'
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_MAX_TOKENS = 128
 const DEFAULT_MAX_TOOL_ARGUMENT_CHARS = 12_000
@@ -21,14 +26,12 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647
 export const name = 'dsh-smart-approval'
 
 /** Services that must exist before the answerer registers. */
-export const inject = ['approval', 'permissionPresets', 'llm']
+export const inject = ['approval', 'permissionPresets', 'llm', 'sessions']
 
 /** Runtime configuration for smart approval. */
 export interface Config {
-  /** Permission preset that activates smart review. */
-  readonly preset?: string
-  /** Permission preset that activates unattended review. */
-  readonly unattendedPreset?: string
+  /** Review mode pinned into newly created sessions. */
+  readonly defaultMode?: ReviewMode
   /** Optional dedicated reviewer provider; configure together with `reviewerModel`. */
   readonly reviewerProvider?: string
   /** Optional dedicated reviewer model; configure together with `reviewerProvider`. */
@@ -47,8 +50,7 @@ export interface Config {
 
 /** Cordis configuration schema with conservative bounded defaults. */
 export const Config: z<Config> = z.object({
-  preset: z.string().min(1).default(DEFAULT_PRESET),
-  unattendedPreset: z.string().min(1).default(DEFAULT_UNATTENDED_PRESET),
+  defaultMode: z.union(REVIEW_MODES as unknown as ReviewMode[]).default(DEFAULT_REVIEW_MODE),
   reviewerProvider: z.string().min(1),
   reviewerModel: z.string().min(1),
   timeoutMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(DEFAULT_TIMEOUT_MS),
@@ -60,16 +62,12 @@ export const Config: z<Config> = z.object({
 
 /**
  * Register a prepended approval answerer. Mode is resolved from the session log
- * for every request, so `/permission` changes take effect without plugin reload.
+ * for every request, so `/approval-mode` changes take effect without plugin reload.
  * @param ctx - Cordis context with DSH approval, permission, and LLM services.
  * @param config - optional reviewer route and bounded context limits.
  */
 export function apply(ctx: Context, config: Config = {}): void {
-  const preset = config.preset ?? DEFAULT_PRESET
-  const unattendedPreset = config.unattendedPreset ?? DEFAULT_UNATTENDED_PRESET
-  if (preset === unattendedPreset) {
-    throw new Error('smart-approval: smart and unattended presets must be different')
-  }
+  const defaultMode = config.defaultMode ?? DEFAULT_REVIEW_MODE
   const reviewerConfig = resolveLlmReviewerConfig({
     ...config.reviewerProvider === undefined ? {} : { provider: config.reviewerProvider },
     ...config.reviewerModel === undefined ? {} : { model: config.reviewerModel },
@@ -77,10 +75,41 @@ export function apply(ctx: Context, config: Config = {}): void {
     maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
   })
   const review = createLlmReviewer(ctx.llm, reviewerConfig)
+  for (const session of ctx.sessions.list()) {
+    if (selectedReviewMode(session.events) !== undefined) continue
+    setReviewMode(session, legacyReviewMode(ctx.permissionPresets.current(session.events)))
+  }
+  ctx.on('session/created', session => setReviewMode(session, defaultMode))
+  ctx.inject(['sessionProjections'], (scope) => {
+    scope.sessionProjections.register<'approvalReview', ReviewModeProjection>({
+      key: 'approvalReview',
+      schema: reviewModeProjectionSchema,
+      init: () => ({ mode: defaultMode }),
+      apply: applyReviewModeEvent,
+      view: state => state,
+      stateVersion: 1,
+    })
+  })
+  ctx.inject(['commands'], (scope) => {
+    scope.commands.register({
+      name: 'approval-mode',
+      description: 'Switch automatic approval review mode',
+      input: { hint: '<manual|smart|unattended>' },
+      handler: ({ agent, rawInput }) => {
+        const mode = rawInput.trim()
+        if (mode === '') {
+          return { kind: 'success', text: `current approval mode ${effectiveReviewMode(agent.session.events, defaultMode)}` }
+        }
+        if (!(REVIEW_MODES as readonly string[]).includes(mode)) {
+          return { kind: 'error', text: `unknown approval mode "${mode}" (available: ${REVIEW_MODES.join(', ')})` }
+        }
+        setReviewMode(agent.session, mode as ReviewMode)
+        return { kind: 'success', text: `approval mode ${mode}` }
+      },
+    })
+  })
   const handler = createSmartApprovalHandler({
-    preset,
-    unattendedPreset,
-    currentPreset: events => ctx.permissionPresets.current(events),
+    currentMode: events => effectiveReviewMode(events, defaultMode),
     limits: {
       maxToolArgumentChars: config.maxToolArgumentChars ?? DEFAULT_MAX_TOOL_ARGUMENT_CHARS,
       maxUserMessages: config.maxUserMessages ?? DEFAULT_MAX_USER_MESSAGES,

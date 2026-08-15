@@ -6,6 +6,7 @@ import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-app
 import { describe, expect, it, vi } from 'vitest'
 import { createSmartApprovalHandler } from '../src/approval-handler.ts'
 import { buildReviewPayload } from '../src/review-context.ts'
+import type { ReviewMode } from '../src/review-mode.ts'
 
 const callId = CallId('call-1')
 
@@ -266,7 +267,7 @@ describe('buildReviewPayload', () => {
 
 describe('createSmartApprovalHandler', () => {
   function setup(options: {
-    preset?: string
+    mode?: ReviewMode
     decision?:
       | { decision: 'allow'; reasonCode: 'bounded-build-test' }
       | { decision: 'human'; reasonCode: 'uncertain' }
@@ -283,9 +284,7 @@ describe('createSmartApprovalHandler', () => {
     const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
     const log = vi.fn()
     const handler = createSmartApprovalHandler({
-      preset: 'smart-approval',
-      unattendedPreset: 'unattended',
-      currentPreset: () => options.preset ?? 'smart-approval',
+      currentMode: () => options.mode ?? 'smart',
       limits: { maxToolArgumentChars: 12_000, maxUserMessages: 4, maxUserContextChars: 8_000 },
       review,
       log,
@@ -295,7 +294,7 @@ describe('createSmartApprovalHandler', () => {
 
   it('delegates every manual-mode request untouched, including malicious classifications', async () => {
     const { handler, review, next, log } = setup({
-      preset: 'workspace-write',
+      mode: 'manual',
       decision: { decision: 'reject', reasonCode: 'credential-exfiltration' },
     })
     await expect(handler(requestOf(), next)).resolves.toBe('rejected')
@@ -305,7 +304,7 @@ describe('createSmartApprovalHandler', () => {
   })
 
   it('delegates an already cancelled request untouched in manual mode', async () => {
-    const { handler, review, next, log } = setup({ preset: 'workspace-write' })
+    const { handler, review, next, log } = setup({ mode: 'manual' })
 
     await expect(handler(requestOf({ signal: AbortSignal.abort() }), next)).resolves.toBe('rejected')
     expect(next).toHaveBeenCalledOnce()
@@ -314,24 +313,22 @@ describe('createSmartApprovalHandler', () => {
   })
 
   it('changes mode on the next request without recreating the handler', async () => {
-    let selectedPreset = 'workspace-write'
+    let selectedMode: ReviewMode = 'manual'
     const review = vi.fn(async () => ({ decision: 'allow', reasonCode: 'bounded-build-test' }) as const)
     const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
     const handler = createSmartApprovalHandler({
-      preset: 'smart-approval',
-      unattendedPreset: 'unattended',
-      currentPreset: () => selectedPreset,
+      currentMode: () => selectedMode,
       limits: { maxToolArgumentChars: 12_000, maxUserMessages: 4, maxUserContextChars: 8_000 },
       review,
       log: vi.fn(),
     })
 
     await expect(handler(requestOf(), next)).resolves.toBe('rejected')
-    selectedPreset = 'smart-approval'
+    selectedMode = 'smart'
     await expect(handler(requestOf(), next)).resolves.toBe('allowed-once')
-    selectedPreset = 'unattended'
+    selectedMode = 'unattended'
     await expect(handler(requestOf(), next)).resolves.toBe('allowed-once')
-    selectedPreset = 'workspace-write'
+    selectedMode = 'manual'
     await expect(handler(requestOf(), next)).resolves.toBe('rejected')
     expect(review).toHaveBeenCalledTimes(2)
     expect(next).toHaveBeenCalledTimes(2)
@@ -344,9 +341,9 @@ describe('createSmartApprovalHandler', () => {
     expect(next).not.toHaveBeenCalled()
   })
 
-  it.each(['smart-approval', 'unattended'])('rejects a clearly malicious decision in %s without opening a human prompt', async (preset) => {
+  it.each(['smart', 'unattended'] as const)('rejects a clearly malicious decision in %s without opening a human prompt', async (mode) => {
     const { handler, next, log } = setup({
-      preset,
+      mode,
       decision: { decision: 'reject', reasonCode: 'credential-exfiltration' },
     })
 
@@ -377,7 +374,7 @@ describe('createSmartApprovalHandler', () => {
     [{ decision: 'human', reasonCode: 'uncertain' } as const, 'uncertain'],
     [null, 'invalid-review'],
   ])('rejects %s reviewer result in unattended mode', async (decision, reasonCode) => {
-    const { handler, next, log } = setup({ preset: 'unattended', decision })
+    const { handler, next, log } = setup({ mode: 'unattended', decision })
 
     await expect(handler(requestOf(), next)).resolves.toBe('rejected')
     expect(next).not.toHaveBeenCalled()
@@ -386,7 +383,7 @@ describe('createSmartApprovalHandler', () => {
 
   it('rejects reviewer failures in unattended mode without opening a human prompt', async () => {
     const { handler, next, log } = setup({
-      preset: 'unattended',
+      mode: 'unattended',
       reviewError: new Error('provider failed'),
     })
 
@@ -416,7 +413,7 @@ describe('createSmartApprovalHandler', () => {
       events: actionEvents('{"command":"rm -rf /work/other","sandbox_permissions":"danger-full-access"}', [message]),
       messages: [message],
     })
-    const { handler, review, next, log } = setup({ preset: 'unattended' })
+    const { handler, review, next, log } = setup({ mode: 'unattended' })
 
     await expect(handler(request, next)).resolves.toBe('rejected')
     expect(review).not.toHaveBeenCalled()
@@ -442,45 +439,41 @@ describe('createSmartApprovalHandler', () => {
     expect(next).not.toHaveBeenCalled()
   })
 
-  it('rechecks the selected preset after an asynchronous review', async () => {
-    let selectedPreset = 'smart-approval'
-    const currentPreset = vi.fn(() => selectedPreset)
+  it('rechecks the selected mode after an asynchronous review', async () => {
+    let selectedMode: ReviewMode = 'smart'
+    const currentMode = vi.fn(() => selectedMode)
     const review = vi.fn(async () => {
-      selectedPreset = 'workspace-write'
+      selectedMode = 'manual'
       return { decision: 'allow', reasonCode: 'bounded-build-test' } as const
     })
     const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
     const log = vi.fn()
     const handler = createSmartApprovalHandler({
-      preset: 'smart-approval',
-      unattendedPreset: 'unattended',
-      currentPreset,
+      currentMode,
       limits: { maxToolArgumentChars: 12_000, maxUserMessages: 4, maxUserContextChars: 8_000 },
       review,
       log,
     })
 
     await expect(handler(requestOf(), next)).resolves.toBe('rejected')
-    expect(currentPreset).toHaveBeenCalledTimes(2)
+    expect(currentMode).toHaveBeenCalledTimes(2)
     expect(next).toHaveBeenCalledOnce()
     expect(log).toHaveBeenCalledWith(expect.objectContaining({
       outcome: 'human',
-      reasonCode: 'preset-changed',
+      reasonCode: 'mode-changed',
     }))
   })
 
   it('rejects instead of reusing a smart-mode allow when switched to unattended during review', async () => {
-    let selectedPreset = 'smart-approval'
+    let selectedMode: ReviewMode = 'smart'
     const review = vi.fn(async () => {
-      selectedPreset = 'unattended'
+      selectedMode = 'unattended'
       return { decision: 'allow', reasonCode: 'bounded-build-test' } as const
     })
     const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
     const log = vi.fn()
     const handler = createSmartApprovalHandler({
-      preset: 'smart-approval',
-      unattendedPreset: 'unattended',
-      currentPreset: () => selectedPreset,
+      currentMode: () => selectedMode,
       limits: { maxToolArgumentChars: 12_000, maxUserMessages: 4, maxUserContextChars: 8_000 },
       review,
       log,
@@ -490,22 +483,20 @@ describe('createSmartApprovalHandler', () => {
     expect(next).not.toHaveBeenCalled()
     expect(log).toHaveBeenCalledWith(expect.objectContaining({
       outcome: 'rejected',
-      reasonCode: 'preset-changed',
+      reasonCode: 'mode-changed',
     }))
   })
 
   it('does not reuse a malicious smart-mode decision after switching to manual during review', async () => {
-    let selectedPreset = 'smart-approval'
+    let selectedMode: ReviewMode = 'smart'
     const review = vi.fn(async () => {
-      selectedPreset = 'workspace-write'
+      selectedMode = 'manual'
       return { decision: 'reject', reasonCode: 'credential-exfiltration' } as const
     })
     const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
     const log = vi.fn()
     const handler = createSmartApprovalHandler({
-      preset: 'smart-approval',
-      unattendedPreset: 'unattended',
-      currentPreset: () => selectedPreset,
+      currentMode: () => selectedMode,
       limits: { maxToolArgumentChars: 12_000, maxUserMessages: 4, maxUserContextChars: 8_000 },
       review,
       log,
@@ -515,7 +506,7 @@ describe('createSmartApprovalHandler', () => {
     expect(next).toHaveBeenCalledOnce()
     expect(log).toHaveBeenCalledWith(expect.objectContaining({
       outcome: 'human',
-      reasonCode: 'preset-changed',
+      reasonCode: 'mode-changed',
     }))
   })
 
