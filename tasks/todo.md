@@ -447,3 +447,103 @@
 - 隔离 DSH 组合验收连续发起两次 `write`：会话事件 `21/22` 与 `33/34` 分别记录两次独立的 `approval/asked` 和 `allowed-once`，两份目标文件内容核对通过。
 - `pnpm audit --prod`：未发现已知漏洞；当前源码、Git 历史、构建产物及本机路径扫描均为 0 命中。
 - `review-gate` 结论：通过。未发现阻止交付的问题；真实 provider 的语义稳定性仍需在实际模型配置中持续观察，任何异常输出都会按模式失败关闭。
+
+---
+
+## 2026-08-16 安全边界文档、变更日志与真实环境验收
+
+### 目标
+
+准确披露文件审批的 TOCTOU 残余风险，提供面向用户的版本历史，并在不读取或输出凭据的前提下验证真实审核 provider 与 Web/ACP 人工回退。
+
+### 范围
+
+- 更新中英文 README 的路径竞态、`workspace-write`、`danger-full-access` 和近期历史分类边界。
+- 新增 `CHANGELOG.md` 并将其纳入 npm 发布包。
+- 使用现有 Web profile 做真实 provider 安全请求与不确定请求验收。
+- 保持两处 `isRecord()` 不变；不提交、不推送、不发布。
+
+### 验收标准
+
+- [x] 中英文 README 准确说明 TOCTOU 窗口和不同权限模式的边界。
+- [x] README 准确说明近期历史由模型分类、本地前检与封闭映射共同约束。
+- [x] `CHANGELOG.md` 只记录可由 Git 历史核实的用户可见变化，并包含在 npm 包中。
+- [x] 真实 provider 对明确安全请求完成逐请求裁决。
+- [x] 含历史冲突信号的请求进入 Web 人工回退，且不被插件自动放行。
+- [x] 差异、打包、必要代码检查和敏感信息复核通过。
+
+### 实施步骤
+
+- [x] 核对实现、DSH 核心边界、Git 历史和当前 profile 状态。
+- [x] 更新中英文 README、`CHANGELOG.md` 和 npm 文件清单。
+- [x] 执行文档、打包和代码质量验证。
+- [x] 启动真实 Web profile，验证模型裁决和人工回退。
+- [x] 完成交付前独立复核并记录 Review。
+
+### 验证方式
+
+- `git diff --check`
+- `npm pack --dry-run --ignore-scripts`
+- `pnpm run check`
+- 使用临时普通文本目标触发真实 provider 自动允许；使用不确定但无破坏性的申请验证人工回退。
+
+### 回滚
+
+- 文档和包清单可按本轮差异整体回退；运行时验收只使用一次性授权和临时普通文本目标，不改变永久权限或 provider 凭据。
+
+### Review
+
+- 文档与打包：中英文 README 已披露 TOCTOU、`workspace-write` 与 `danger-full-access` 的不同边界，并澄清近期历史参与模型分类但不构成持久授权；`CHANGELOG.md` 已加入 npm 文件清单。
+- 自动验证：`git diff --check` 退出码 0；`pnpm run check` 通过，8 个测试文件共 142 项测试通过，类型检查和双入口构建通过；使用独立临时 npm 缓存执行 dry-run 打包成功，12 个文件中包含 `CHANGELOG.md`。
+- 真实模型：本机 Web profile 使用已配置的独立 reviewer 路由。干净新会话中的明确跨工作区普通文本写入产生 `approval/asked`，随后由插件记录 `allowed-once` 并成功执行，全程未显示人工审批卡。
+- 人工回退：含近期历史冲突信号的同类请求未被自动放行，Web 显示“等待审批”及“拒绝/允许一次”；最终取消后事件记录 `cancelled`，未写入目标文件。ACP 没有独立活动 profile，本轮未重复验证 ACP 展示层。
+- 环境说明：默认 npm 缓存因历史 root-owned 文件返回 `EPERM`，未修改其权限；改用 `/private/tmp` 下任务专用缓存后打包通过。
+- 清理：两次验收的目标文件均不存在，未留下测试产物；未读取或输出 provider 凭据。
+- 发布边界：本轮变更记录在 `Unreleased`，当前版本仍是已发布的 `0.1.0-rc.5`；后续发布前必须先提升版本，不能复用 rc.5。
+- `review-gate` 结论：有条件通过。未发现阻止本轮交付的问题；ACP 展示层未单独验证，TOCTOU 仍需由未来 DSH 核心原子路径能力进一步收敛。
+
+---
+
+## 2026-08-16 发布 0.1.0-rc.6
+
+### 目标
+
+将已经完成验证的安全边界文档、CHANGELOG 和真实环境验收结果作为 `dsh-smart-approval@0.1.0-rc.6` 提交、推送并发布，使 npm `latest` 与 `next` 同时指向 rc.6。
+
+### 范围
+
+- 将插件版本和中英文安装示例提升到 `0.1.0-rc.6`，保持 DSH peer 范围不变。
+- 将 CHANGELOG 的 `Unreleased` 固化为 rc.6 发布记录。
+- 完成测试、构建、打包、敏感信息复核、GitHub CI 和 npm registry 验证。
+- 提交并推送 `main`，发布 npm rc.6 并更新 `latest`、`next`。
+
+### 验收标准
+
+- [x] `package.json`、README 和 CHANGELOG 版本一致为 rc.6。
+- [x] 完整本地门禁、发布包内容和敏感信息检查通过。
+- [ ] GitHub `main` 远端 SHA 与本地发布提交一致，CI 成功。
+- [ ] npm 存在 `0.1.0-rc.6`，且 `latest`、`next` 均指向 rc.6。
+- [ ] 发布后包元数据、文件清单和安装命令复核通过。
+
+### 实施步骤
+
+- [x] 核对 GitHub、npm、作者信息、现有版本和发布恢复策略。
+- [x] 更新 rc.6 版本元数据、安装文档和 CHANGELOG。
+- [x] 执行完整发布门禁并复核最终 diff。
+- [ ] 提交、推送并等待 GitHub CI 成功。
+- [ ] 完成 npm 登录、发布、dist-tags 更新和 registry 复核。
+
+### 验证方式
+
+- `pnpm run check`
+- `pnpm audit --prod`
+- `npm pack --dry-run --ignore-scripts`
+- `git diff --check` 与本轮新增行敏感信息扫描
+- `git ls-remote origin refs/heads/main`
+- GitHub Actions run 状态与日志
+- `npm view dsh-smart-approval@0.1.0-rc.6` 和 `npm view dsh-smart-approval dist-tags`
+
+### 回滚
+
+- npm 已发布版本不删除、不覆盖；发现问题时发布更高的 rc.7 修复，并调整 dist-tags。
+- GitHub 使用新提交修复或回退，不强制改写 `main` 历史。

@@ -1,6 +1,6 @@
 # dsh-smart-approval
 
-[English](README.md) | 中文
+[English](README.md) | 中文 | [更新记录](CHANGELOG.md)
 
 `dsh-smart-approval` 是
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的失败关闭审批插件。
@@ -45,7 +45,7 @@ Web 输入框底部应显示两个控件：
 
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.5
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.6
 dsh --profile web --dump-config
 dsh web
 ```
@@ -53,7 +53,7 @@ dsh web
 一次性运行：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.5
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.6
 npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
 npx @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -186,7 +186,9 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 
 - 人工审批不调用审核模型。智能审批和无人值守会把 workspace 根目录、规范化动作、有界的近期直接用户
   纯文本及不含正文的文件目标元数据发送给审核 provider。`write`/`edit` 的规范化动作包含判断本次变更所需的
-  精确新内容或替换文本；检测到凭据材料时会在本地停止。
+  精确新内容或替换文本；检测到凭据材料时会在本地停止。模型根据这些有界历史分类风险、授权和意图；调用
+  模型前先执行确定性本地前检，再由本地封闭映射把严格分类转换为对应模式的最终决定。因此旧消息只是上下文，
+  不是持久授权。
 - 复用当前会话模型便于部署，但不构成独立安全复核；敏感环境应配置独立、受控的 provider 路由。
 - 只有已经进入 DSH 审批通道的请求才能被审核；不触发审批的网络或远程操作不在本插件控制范围内。
 - 模型分类不是安全证明。未知工具或参数、文件系统别名、后台执行、非文本或不完整上下文均失败关闭：智能
@@ -194,6 +196,10 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 - 每次自动授权只对当前调用有效，重复申请也会重新审查；不保存决策缓存、目录白名单、审批先例或永久授权。
 - 日志只记录工具名、结果和短原因码，不记录完整提示、参数、凭据或模型推理。
 - 智能审批的人工回退和人工审批需要其他 Web、ACP 或自定义人工 answerer；如果不存在，DSH 保持失败关闭。
+- 文件目标检查发生在审批和实际执行之前，期间理论上可能发生路径替换（TOCTOU）。在 `workspace-write` 下，
+  DSH 会在执行变更前再次规范化并检查目标，这会缩小但不能消除竞态；一次性 `danger-full-access` 拥有宽泛
+  文件系统权限，不提供同等的目录包含检查。除非 DSH 核心提供原子的 no-follow/open-relative 路径能力，
+  本插件无法彻底消除路径替换竞态；审批等待期间不应允许不可信进程修改 workspace。
 - DSH 当前只有一个 `workspace-write` 根目录。一次性 Full access 仍拥有宽泛文件系统权限，本插件不会把它
   变成多根目录沙箱。
 

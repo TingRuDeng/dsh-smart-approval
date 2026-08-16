@@ -1,6 +1,6 @@
 {
   "name": "dsh-smart-approval",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0-rc.6",
   "description": "Fail-closed LLM-assisted approval reviewer for DeepSeek Harness",
   "type": "module",
   "main": "./lib/index.js",
@@ -21,6 +21,7 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {

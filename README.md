@@ -1,6 +1,6 @@
 # dsh-smart-approval
 
-English | [中文](README.zh.md)
+English | [中文](README.zh.md) | [Changelog](CHANGELOG.md)
 
 `dsh-smart-approval` is a fail-closed approval plugin for
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It separates
@@ -50,7 +50,7 @@ After installing the DSH CLI globally:
 
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.5
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.6
 dsh --profile web --dump-config
 dsh web
 ```
@@ -58,7 +58,7 @@ dsh web
 For one-off execution:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.5
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.6
 npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
 npx @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -222,6 +222,10 @@ profile's existing permission presets.
   content-free file-target metadata to the review provider. For `write` and
   `edit`, the normalized action includes the exact new/replacement text needed
   to classify the mutation; detected credential material is stopped locally.
+  The model classifies risk, authorization, and intent from that bounded
+  history. Deterministic local prechecks run before the model, and a closed
+  local mapping turns the strict classification into the final mode-specific
+  decision; older text is therefore context, not a persistent grant.
 - Reusing the current session model is convenient but is not an independent
   security review. Sensitive deployments should use a separate controlled
   provider route.
@@ -238,6 +242,14 @@ profile's existing permission presets.
   arguments, credentials, or model reasoning.
 - Smart fallback and manual mode require another Web, ACP, or custom human
   answerer. Without one, DSH remains fail-closed.
+- File-target inspection happens before approval and execution, so a path can
+  theoretically be replaced in between (TOCTOU). Under `workspace-write`, DSH
+  normalizes and checks the target again before the mutation, which narrows but
+  does not eliminate that race. A one-time `danger-full-access` approval has
+  broad filesystem authority and does not provide the same containment check.
+  This plugin cannot fully remove path-replacement races without atomic
+  no-follow/open-relative primitives in DSH core; keep untrusted processes out
+  of the workspace while an approval is pending.
 - DSH currently has one `workspace-write` root. A one-time Full access approval
   still has broad filesystem authority; this plugin does not turn it into a
   multi-root sandbox.
