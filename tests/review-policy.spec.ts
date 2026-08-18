@@ -81,6 +81,42 @@ describe('decisionFromAssessment', () => {
     })).toEqual({ decision: 'human', reasonCode: 'uncertain' })
   })
 
+  it('allows medium-risk actions the user explicitly authorized by scope', () => {
+    expect(decisionFromAssessment({
+      riskLevel: 'medium',
+      authorization: 'high',
+      intent: 'benign',
+      reasonCode: 'explicit-user-scope',
+    })).toEqual({ decision: 'allow', reasonCode: 'explicit-user-scope' })
+  })
+
+  it('keeps high-risk actions on human review even when explicitly authorized', () => {
+    expect(decisionFromAssessment({
+      riskLevel: 'high',
+      authorization: 'high',
+      intent: 'benign',
+      reasonCode: 'explicit-user-scope',
+    })).toEqual({ decision: 'human', reasonCode: 'uncertain' })
+  })
+
+  it('requires high authorization before relaxing the low-risk gate', () => {
+    expect(decisionFromAssessment({
+      riskLevel: 'medium',
+      authorization: 'medium',
+      intent: 'benign',
+      reasonCode: 'explicit-user-scope',
+    })).toEqual({ decision: 'human', reasonCode: 'uncertain' })
+  })
+
+  it('keeps an explicitly authorized but weakly authorized low-risk action on human review', () => {
+    expect(decisionFromAssessment({
+      riskLevel: 'low',
+      authorization: 'unknown',
+      intent: 'benign',
+      reasonCode: 'explicit-user-scope',
+    })).toEqual({ decision: 'human', reasonCode: 'scope-not-authorized' })
+  })
+
   it('delegates uncertain intent without turning it into a model grant', () => {
     expect(decisionFromAssessment({
       riskLevel: 'medium',

@@ -2,11 +2,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type {} from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type { Session } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-settings'
 import { createSmartApprovalHandler } from './approval-handler.ts'
 import {
   createFileTargetInspector,
@@ -19,6 +19,16 @@ import {
   REVIEW_MODES, reviewModeProjectionSchema, viewReviewModeProjection,
 } from './review-mode.ts'
 import type { ReviewMode, ReviewModeProjectionState } from './review-mode.ts'
+import {
+  reviewerModelCatalog,
+  reviewerModelProjection,
+  reviewerConfigForRequest,
+  routeAvailable,
+  SMART_APPROVAL_SETTINGS_NAMESPACE,
+  SmartApprovalSettingsSchema,
+  validateSmartApprovalSettings,
+  type ReviewerRouteState,
+} from './reviewer-settings.ts'
 import { reviewModeDomainSpec, ReviewModeStore } from './review-mode-storage.ts'
 
 const DEFAULT_TIMEOUT_MS = 15_000
@@ -27,6 +37,25 @@ const DEFAULT_MAX_TOOL_ARGUMENT_CHARS = 12_000
 const DEFAULT_MAX_USER_MESSAGES = 4
 const DEFAULT_MAX_USER_CONTEXT_CHARS = 8_000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
+
+interface SmartApprovalSettingsScope {
+  get(): import('./reviewer-settings.ts').SmartApprovalSettings
+  replace(section: object): Promise<void>
+}
+
+interface SmartApprovalMutableRouteState extends ReviewerRouteState {
+  readonly scope: SmartApprovalSettingsScope
+}
+
+interface SmartApprovalConnection {
+  readonly rpc: {
+    handle(
+      channel: string,
+      handler: (endpoint: string, payload: unknown) => Promise<unknown>,
+      options: { readonly authority: 'trusted-host' },
+    ): () => Promise<void>
+  }
+}
 
 /** Cordis plugin name used in diagnostics. */
 export const name = 'dsh-smart-approval'
@@ -75,14 +104,28 @@ export const Config: z<Config> = z.object({
  */
 export function apply(ctx: Context, config: Config = {}): Promise<void> {
   const defaultMode = config.defaultMode ?? DEFAULT_REVIEW_MODE
-  const reviewerConfig = resolveLlmReviewerConfig({
+  const profile = resolveLlmReviewerConfig({
     ...config.reviewerProvider === undefined ? {} : { provider: config.reviewerProvider },
     ...config.reviewerModel === undefined ? {} : { model: config.reviewerModel },
     timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
   })
-  const review = createLlmReviewer(ctx.llm, reviewerConfig)
-  return mount(ctx, config, defaultMode, review)
+  let reviewerState: SmartApprovalMutableRouteState | undefined
+  ctx.inject(['settings'], (settingsCtx) => {
+    const scope = settingsCtx.settings.register(
+      SMART_APPROVAL_SETTINGS_NAMESPACE,
+      SmartApprovalSettingsSchema,
+      { validate: validateSmartApprovalSettings },
+    )
+    reviewerState = { scope, profile }
+  })
+  const review = createLlmReviewer(ctx.llm, () => reviewerState === undefined
+    ? profile
+    : reviewerConfigForRequest(reviewerState, {
+        timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
+      }))
+  return mount(ctx, config, defaultMode, review, () => reviewerState)
 }
 
 /** Open the sidecar before exposing any mode-dependent handler. */
@@ -91,6 +134,7 @@ async function mount(
   config: Config,
   defaultMode: ReviewMode,
   review: ReturnType<typeof createLlmReviewer>,
+  reviewerState: () => SmartApprovalMutableRouteState | undefined,
 ): Promise<void> {
   const domain = await ctx.storageDomain.open(reviewModeDomainSpec)
   ctx.effect(() => () => domain.close(), 'smart-approval: close review mode sidecar')
@@ -142,6 +186,44 @@ async function mount(
       },
     })
   })
+  ctx.inject(['connection'], (connectionCtx) => {
+    const connection = (connectionCtx as Context & { connection: SmartApprovalConnection }).connection
+    connectionCtx.effect(() => connection.rpc.handle('/smart-approval', async (endpoint, payload) => {
+      const state = reviewerState()
+      if (state === undefined) {
+        return { ok: false, error: { code: 'internal', message: 'smart approval settings are not available', details: {} } }
+      }
+      const profileRoute = state.profile.provider !== undefined && state.profile.model !== undefined
+      if (endpoint === 'reviewer-model') {
+        const providers = await reviewerModelCatalog(ctx.llm, message => ctx.logger.warn(message))
+        return { ok: true, value: reviewerModelProjection(state.scope.get(), providers, profileRoute) }
+      }
+      if (endpoint === 'set-reviewer-model') {
+        if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+          return { ok: false, error: { code: 'bad-request', message: 'expected reviewer model payload', details: { issues: [] } } }
+        }
+        const candidate = payload as Record<string, unknown>
+        const provider = candidate.reviewerProvider
+        const model = candidate.reviewerModel
+        if (provider === undefined && model === undefined) {
+          await state.scope.replace({})
+          const providers = await reviewerModelCatalog(ctx.llm, message => ctx.logger.warn(message))
+          return { ok: true, value: reviewerModelProjection(state.scope.get(), providers, profileRoute) }
+        }
+        if (typeof provider !== 'string' || typeof model !== 'string') {
+          return { ok: false, error: { code: 'bad-request', message: 'expected reviewerProvider and reviewerModel together', details: { issues: [] } } }
+        }
+        const providers = await reviewerModelCatalog(ctx.llm, message => ctx.logger.warn(message))
+        if (!routeAvailable(providers, provider, model)) {
+          return { ok: false, error: { code: 'model-unavailable', message: 'the selected reviewer model is unavailable', details: { provider, model } } }
+        }
+        await state.scope.replace({ reviewerProvider: provider, reviewerModel: model })
+        return { ok: true, value: reviewerModelProjection(state.scope.get(), providers, profileRoute) }
+      }
+      return { ok: false, error: { code: 'bad-request', message: 'unknown smart approval endpoint', details: { issues: [] } } }
+    }, { authority: 'trusted-host' }), 'smart-approval: reviewer settings RPC')
+  })
+
   const handler = createSmartApprovalHandler({
     currentMode,
     limits: {

@@ -114,6 +114,22 @@ describe('createLlmReviewer', () => {
     expect(llm.seen[0]).toMatchObject({ provider: 'review-provider', model: 'review-model' })
   })
 
+  it('resolves a live route once at each approval request start', async () => {
+    const llm = streaming(chunks(benignAssessmentJson))
+    let model = 'first-model'
+    const review = createLlmReviewer(llm, () => resolveLlmReviewerConfig({
+      provider: 'review-provider',
+      model,
+    }))
+
+    const first = review(payload, requestOf())
+    model = 'second-model'
+    await first
+    await review(payload, requestOf())
+
+    expect(llm.seen.map(options => options.model)).toEqual(['first-model', 'second-model'])
+  })
+
   it('returns a strict malicious classification from the reviewer', async () => {
     const llm = streaming(chunks(maliciousAssessmentJson))
     const review = createLlmReviewer(llm, resolveLlmReviewerConfig({}))

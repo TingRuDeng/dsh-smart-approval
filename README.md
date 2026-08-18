@@ -8,6 +8,12 @@ access permission from automatic review: DSH continues to own Read Only,
 Workspace Write, and Full access, while this plugin adds an independent review
 selector beside `Workspace Write`.
 
+The Smart approval model card in Settings → Plugins → Plugin configuration selects
+the dedicated reviewer route for Smart and Unattended approvals. It lists only
+currently registered text-capable models and never shows or stores API keys,
+endpoints, environment variables, or other credentials. Manual approval never
+calls the configured model.
+
 New sessions use smart approval by default. Changing review mode does not change
 the sandbox, and changing access permission does not change review mode. Both
 changes apply to the next approval request without restarting DSH.
@@ -187,8 +193,15 @@ directory allowlist, cached precedent, or permanent permission.
 
 ## Configuration
 
-The current session route performs review by default. To use an independent
-route, override the plugin row in the profile's `cordis.patch.yml`:
+The current session route performs review by default. The Smart approval model
+card in Settings → Plugins → Plugin configuration selects a dedicated route from
+live registered text models and overrides the profile route below. Clearing the
+card restores the profile route, or the current session route when no profile
+route is configured. Every Smart or Unattended approval freezes its route when
+that request begins, so a later settings change affects only later requests.
+Manual mode never invokes the reviewer.
+
+A profile can still provide the static fallback route in `cordis.patch.yml`:
 
 ```yaml
 - id: smart-approval

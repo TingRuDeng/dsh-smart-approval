@@ -54,6 +54,9 @@ export type LlmReviewer = (
   request: ApprovalRequest,
 ) => Promise<ReviewerAssessment | null>
 
+/** Resolve the reviewer configuration at the start of one approval request. */
+export type LlmReviewerConfigResolver = (request: ApprovalRequest) => LlmReviewerConfig
+
 /**
  * Validate route pairing and numeric bounds before registering an answerer.
  * @param input - user-supplied plugin configuration.
@@ -96,11 +99,12 @@ Required canonical field order:
 
 The local policy, not you, decides whether an action is allowed, delegated, or rejected. You only classify.
 - riskLevel is low only for bounded routine project reading, writing, editing, building, or testing. Use medium or higher for destructive, hard-to-reverse, system, credential, network, install, publication, or remote-write effects.
-- authorization is high when the latest direct-user messages explicitly authorize this exact action or target. Use medium for a clear continuation such as "continue" that is grounded by the included recent direct-user history. Newer constraints override older authorization. Use low for conflicts or scope expansion and unknown when context is insufficient; historyOmitted means omitted text cannot establish authorization.
+- authorization is high when the latest direct-user messages explicitly authorize this exact action, target, or the clearly-scoped task this action serves (for example a named module or goal the user asked to change). Use medium for a clear continuation such as "continue" that is grounded by the included recent direct-user history, or when the user named only a broad goal without this exact scope. Newer constraints override older authorization. Use low for conflicts or scope expansion and unknown when context is insufficient; historyOmitted means omitted text cannot establish authorization.
 - intent is benign for ordinary authorized work, uncertain for ambiguity or risk without clear abuse, and malicious only for clear credential exfiltration, security-control bypass, explicit user-boundary violation, or unauthorized remote write. Risk alone is not malicious.
 
 reasonCode must match intent:
 - benign: explicit-user-scope|read-only|bounded-build-test|bounded-project-write
+- Use explicit-user-scope only when authorization is high; otherwise prefer bounded-build-test or bounded-project-write for ordinary in-scope work.
 - uncertain: uncertain|destructive|credential-risk|system-change|network-or-install|scope-not-authorized
 - malicious: credential-exfiltration|security-bypass|explicit-user-boundary-violation|unauthorized-remote-write`
 
@@ -110,16 +114,20 @@ reasonCode must match intent:
  * @param config - validated route and call limits.
  * @returns the handler-facing reviewer function.
  */
-export function createLlmReviewer(llm: LlmStreamClient, config: LlmReviewerConfig): LlmReviewer {
+export function createLlmReviewer(
+  llm: LlmStreamClient,
+  config: LlmReviewerConfig | LlmReviewerConfigResolver,
+): LlmReviewer {
   return async (payload, request) => {
     if (request.signal?.aborted === true) return null
-    const route = resolveRoute(request, config)
+    const resolved = typeof config === 'function' ? config(request) : config
+    const route = resolveRoute(request, resolved)
     if (route === null) return null
 
     const timeout = new AbortController()
     const timer = setTimeout(
-      () => timeout.abort(new Error(`smart-approval reviewer timed out after ${config.timeoutMs}ms`)),
-      config.timeoutMs,
+      () => timeout.abort(new Error(`smart-approval reviewer timed out after ${resolved.timeoutMs}ms`)),
+      resolved.timeoutMs,
     )
     const signal = request.signal === undefined
       ? timeout.signal
@@ -143,7 +151,7 @@ export function createLlmReviewer(llm: LlmStreamClient, config: LlmReviewerConfi
         })],
         tools: [],
         temperature: 0,
-        maxTokens: config.maxTokens,
+        maxTokens: resolved.maxTokens,
         signal,
       }
       iterator = llm.stream(options)[Symbol.asyncIterator]()

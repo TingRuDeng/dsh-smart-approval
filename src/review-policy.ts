@@ -70,13 +70,24 @@ export type ReviewerAssessment =
     readonly reasonCode: RejectReasonCode
   }
 
-/** Convert one model classification into the only decision used by approval modes. */
+/**
+ * Convert one model classification into the only decision used by approval modes.
+ * An explicitly authorized medium-risk action still grants locally; every other
+ * non-low risk and every weak authorization delegates to a human answerer.
+ * @param assessment - one strict model classification.
+ * @returns the closed decision the approval modes may act on.
+ */
 export function decisionFromAssessment(assessment: ReviewerAssessment): ReviewerDecision {
   if (assessment.intent === 'malicious') {
     return { decision: 'reject', reasonCode: assessment.reasonCode }
   }
   if (assessment.intent === 'uncertain') {
     return { decision: 'human', reasonCode: assessment.reasonCode }
+  }
+  const explicitlyAuthorized = assessment.authorization === 'high'
+    && assessment.reasonCode === 'explicit-user-scope'
+  if (explicitlyAuthorized && assessment.riskLevel === 'medium') {
+    return { decision: 'allow', reasonCode: assessment.reasonCode }
   }
   if (assessment.riskLevel !== 'low') return { decision: 'human', reasonCode: 'uncertain' }
   if (assessment.authorization === 'low' || assessment.authorization === 'unknown') {
