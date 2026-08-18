@@ -521,17 +521,17 @@
 
 - [x] `package.json`、README 和 CHANGELOG 版本一致为 rc.6。
 - [x] 完整本地门禁、发布包内容和敏感信息检查通过。
-- [x] GitHub `main` 远端 SHA 与本地发布提交一致，CI 成功。
-- [x] npm 存在 `0.1.0-rc.6`，且 `latest`、`next` 均指向 rc.6。
-- [x] 发布后包元数据、文件清单和安装命令复核通过。
+- [ ] GitHub `main` 远端 SHA 与本地发布提交一致，CI 成功。
+- [ ] npm 存在 `0.1.0-rc.6`，且 `latest`、`next` 均指向 rc.6。
+- [ ] 发布后包元数据、文件清单和安装命令复核通过。
 
 ### 实施步骤
 
 - [x] 核对 GitHub、npm、作者信息、现有版本和发布恢复策略。
 - [x] 更新 rc.6 版本元数据、安装文档和 CHANGELOG。
 - [x] 执行完整发布门禁并复核最终 diff。
-- [x] 提交、推送并等待 GitHub CI 成功。
-- [x] 完成 npm 登录、发布、dist-tags 更新和 registry 复核。
+- [ ] 提交、推送并等待 GitHub CI 成功。
+- [ ] 完成 npm 登录、发布、dist-tags 更新和 registry 复核。
 
 ### 验证方式
 
@@ -547,12 +547,3 @@
 
 - npm 已发布版本不删除、不覆盖；发现问题时发布更高的 rc.7 修复，并调整 dist-tags。
 - GitHub 使用新提交修复或回退，不强制改写 `main` 历史。
-
-### Review
-
-- 发布提交：`f0ce0ea84ce0bf1bb7df1d0fd7474c96c173a7b4` 已推送到 GitHub `main`，远端 SHA 一致；GitHub Actions run `31936363554` 结论为 `success`。
-- 本地门禁：`pnpm run check` 退出 0，8 个测试文件共 142 项测试通过，类型检查和双入口构建成功；`pnpm audit --prod` 未发现已知漏洞；`git diff --check` 通过。
-- npm 发布：registry 已收录 `dsh-smart-approval@0.1.0-rc.6`，`latest` 与 `next` 均指向 rc.6；发布包完整性为 registry 返回的 `sha512-WpsDgavBCWbra...Ro9KbR5tJOb2A==`。
-- 发布包复核：从 registry 实际下载的 tarball 为 56.1 kB，共 12 个预期文件，包含中英文 README、CHANGELOG、LICENSE、bundle patch、manifest 与构建产物；manifest 版本、作者、Node/DSH 兼容范围和公开发布配置正确。
-- 安装与安全：发布包中英文安装命令均固定为 rc.6，未残留 rc.1-rc.5 安装示例；本机绝对路径、私钥头和常见 Token 特征扫描无命中，未读取或输出 npm/provider 凭据。
-- 恢复策略：已发布版本不删除或覆盖；若后续发现问题，发布 rc.7 并重新调整 dist-tags。

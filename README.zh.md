@@ -7,6 +7,8 @@
 它把“访问权限”和“自动审查”拆成两个互不耦合的会话设置：DSH 继续管理
 Read Only、Workspace Write、Full access，插件在 `Workspace Write` 旁边增加独立的自动审查选择框。
 
+“设置 → 插件 → 插件配置”中的“智能审批模型”卡片可为智能审批和无人值守审批选择独立的审核 LLM。它只列出当前已注册且支持 text 输入的模型，不显示或保存 API Key、endpoint、环境变量或其它凭据；人工审批始终不调用该模型。
+
 新会话默认使用智能审批。切换自动审查模式不会改变沙箱权限，切换权限也不会改变自动审查模式；
 两者都从下一次授权申请起生效，无需重启 DSH。
 
@@ -156,7 +158,9 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 
 ## 配置
 
-默认复用当前会话路由。需要独立审核路由时，在 profile 的 `cordis.patch.yml` 中覆盖插件行：
+默认复用当前会话路由。需要固定独立审核路由时，可在“设置 → 插件 → 插件配置”的“智能审批模型”卡片选择当前注册的 provider 和 text model；该用户选择优先于下方的 profile 静态 route。清除卡片选择后会恢复静态 route，若静态 route 也未配置则回退到当前会话模型。每个 Smart / Unattended 审批在开始时冻结路由，因此之后的设置更新只影响新审批。Manual 模式始终不调用审核模型。
+
+也可在 profile 的 `cordis.patch.yml` 中覆盖插件行：
 
 ```yaml
 - id: smart-approval
