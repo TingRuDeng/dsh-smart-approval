@@ -49,8 +49,8 @@ switches a session to Full access.
 After installing the DSH CLI globally:
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.6
+npm install --global @deepseek-ai/dsh@0.1.0-rc.7
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.7
 dsh --profile web --dump-config
 dsh web
 ```
@@ -58,9 +58,9 @@ dsh web
 For one-off execution:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.6
-npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
-npx @deepseek-ai/dsh@0.1.0-rc.6 web
+npx @deepseek-ai/dsh@0.1.0-rc.7 plugin --profile web add dsh-smart-approval@0.1.0-rc.7
+npx @deepseek-ai/dsh@0.1.0-rc.7 --profile web --dump-config
+npx @deepseek-ai/dsh@0.1.0-rc.7 web
 ```
 
 `npm dsh ...` is not a valid npm command. Use `dsh ...` after a global install,

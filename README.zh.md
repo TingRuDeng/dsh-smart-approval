@@ -44,8 +44,8 @@ Web 输入框底部应显示两个控件：
 全局安装 DSH 后：
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.0-rc.6
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.6
+npm install --global @deepseek-ai/dsh@0.1.0-rc.7
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.7
 dsh --profile web --dump-config
 dsh web
 ```
@@ -53,9 +53,9 @@ dsh web
 一次性运行：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-smart-approval@0.1.0-rc.6
-npx @deepseek-ai/dsh@0.1.0-rc.6 --profile web --dump-config
-npx @deepseek-ai/dsh@0.1.0-rc.6 web
+npx @deepseek-ai/dsh@0.1.0-rc.7 plugin --profile web add dsh-smart-approval@0.1.0-rc.7
+npx @deepseek-ai/dsh@0.1.0-rc.7 --profile web --dump-config
+npx @deepseek-ai/dsh@0.1.0-rc.7 web
 ```
 
 `npm dsh ...` 不是合法的 npm 命令。全局安装后使用 `dsh ...`，一次性运行使用
