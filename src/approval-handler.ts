@@ -17,15 +17,22 @@ import {
   type ReviewPayload,
 } from './review-context.ts'
 import type { ReviewMode } from './review-mode.ts'
+import type { DecisionOutcome } from './review-mode-storage.ts'
 
-/** Sanitized decision record suitable for operational logs. */
+/** Sanitized decision record suitable for operational logs and the decision audit. */
 export interface SmartApprovalLogRecord {
+  /** The session whose request was decided; anchors the durable audit row. */
+  readonly session: Session
   /** Whether the plugin granted, delegated, rejected, or observed cancellation. */
-  readonly outcome: 'allowed-once' | 'human' | 'rejected' | 'cancelled'
+  readonly outcome: DecisionOutcome
   /** Stable machine-readable reason without raw arguments or model prose. */
   readonly reasonCode: string
   /** Tool name from the approval request. */
   readonly toolName: string
+  /** Review mode in force when the outcome was decided; absent when the mode resolver itself failed. */
+  readonly mode?: ReviewMode
+  /** Tool-call identity from the approval request, for cross-checking session events. */
+  readonly callId?: string
 }
 
 /** Collaborators used by the approval waterfall listener. */
@@ -49,7 +56,7 @@ export interface SmartApprovalHandlerOptions {
   readonly log: (record: SmartApprovalLogRecord) => void
 }
 
-/** Signature of one `approval/request` waterfall answerer. */
+/** Signature of one approval/request waterfall answerer. */
 export type SmartApprovalHandler = (
   request: ApprovalRequest,
   next: () => Promise<ApprovalOutcome>,
@@ -59,7 +66,7 @@ export type SmartApprovalHandler = (
  * Create the answerer that claims reviewed low-risk grants, delegates smart
  * uncertainty, and rejects non-safe unattended or clearly malicious requests.
  * @param options - mode resolver, reviewer, limits, and sanitized logger.
- * @returns an `approval/request` listener.
+ * @returns an approval/request listener.
  */
 export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions): SmartApprovalHandler {
   return async (request, next) => {
@@ -67,12 +74,14 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
     try {
       selectedMode = options.currentMode(request.agent.session)
     } catch {
-      safeLog(options, { outcome: 'human', reasonCode: 'mode-error', toolName: request.toolName })
+      safeLog(options, decisionRecord(request, { outcome: 'human', reasonCode: 'mode-error' }))
       return next()
     }
     if (selectedMode === 'manual') return next()
     if (requestAborted(request)) {
-      safeLog(options, { outcome: 'cancelled', reasonCode: 'request-cancelled', toolName: request.toolName })
+      safeLog(options, decisionRecord(request, {
+        outcome: 'cancelled', reasonCode: 'request-cancelled', mode: selectedMode,
+      }))
       return 'cancelled'
     }
 
@@ -97,7 +106,9 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
     }
     if (preflight !== null) {
       if (preflight.decision === 'reject') {
-        safeLog(options, { outcome: 'rejected', reasonCode: preflight.reasonCode, toolName: request.toolName })
+        safeLog(options, decisionRecord(request, {
+          outcome: 'rejected', reasonCode: preflight.reasonCode, mode: selectedMode,
+        }))
         return 'rejected'
       }
       return rejectOrHandoff(selectedMode, preflight.reasonCode, request, next, options)
@@ -117,13 +128,17 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
         )
       } catch {
         if (requestAborted(request)) {
-          safeLog(options, { outcome: 'cancelled', reasonCode: 'request-cancelled', toolName: request.toolName })
+          safeLog(options, decisionRecord(request, {
+            outcome: 'cancelled', reasonCode: 'request-cancelled', mode: selectedMode,
+          }))
           return 'cancelled'
         }
         return rejectOrHandoff(selectedMode, 'file-target-error', request, next, options)
       }
       if (requestAborted(request)) {
-        safeLog(options, { outcome: 'cancelled', reasonCode: 'request-cancelled', toolName: request.toolName })
+        safeLog(options, decisionRecord(request, {
+          outcome: 'cancelled', reasonCode: 'request-cancelled', mode: selectedMode,
+        }))
         return 'cancelled'
       }
       if (inspection.kind === 'human') {
@@ -132,11 +147,11 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
       const targetPreflight = preflightFileTarget(context.payload.action, inspection.evidence)
       if (targetPreflight !== null) {
         if (targetPreflight.decision === 'reject') {
-          safeLog(options, {
+          safeLog(options, decisionRecord(request, {
             outcome: 'rejected',
             reasonCode: targetPreflight.reasonCode,
-            toolName: request.toolName,
-          })
+            mode: selectedMode,
+          }))
           return 'rejected'
         }
         return rejectOrHandoff(selectedMode, targetPreflight.reasonCode, request, next, options)
@@ -150,10 +165,14 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
       }
       if (modeAfterInspection !== selectedMode) {
         if (modeAfterInspection === 'unattended') {
-          safeLog(options, { outcome: 'rejected', reasonCode: 'mode-changed', toolName: request.toolName })
+          safeLog(options, decisionRecord(request, {
+            outcome: 'rejected', reasonCode: 'mode-changed', mode: modeAfterInspection,
+          }))
           return 'rejected'
         }
-        safeLog(options, { outcome: 'human', reasonCode: 'mode-changed', toolName: request.toolName })
+        safeLog(options, decisionRecord(request, {
+          outcome: 'human', reasonCode: 'mode-changed', mode: modeAfterInspection,
+        }))
         return next()
       }
     }
@@ -164,13 +183,17 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
       assessment = await options.review(reviewPayload, request)
     } catch {
       if (requestAborted(request)) {
-        safeLog(options, { outcome: 'cancelled', reasonCode: 'request-cancelled', toolName: request.toolName })
+        safeLog(options, decisionRecord(request, {
+          outcome: 'cancelled', reasonCode: 'request-cancelled', mode: selectedMode,
+        }))
         return 'cancelled'
       }
       reviewFailed = true
     }
     if (requestAborted(request)) {
-      safeLog(options, { outcome: 'cancelled', reasonCode: 'request-cancelled', toolName: request.toolName })
+      safeLog(options, decisionRecord(request, {
+        outcome: 'cancelled', reasonCode: 'request-cancelled', mode: selectedMode,
+      }))
       return 'cancelled'
     }
     let currentMode: ReviewMode
@@ -181,20 +204,28 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
     }
     if (currentMode !== selectedMode) {
       if (currentMode === 'unattended') {
-        safeLog(options, { outcome: 'rejected', reasonCode: 'mode-changed', toolName: request.toolName })
+        safeLog(options, decisionRecord(request, {
+          outcome: 'rejected', reasonCode: 'mode-changed', mode: currentMode,
+        }))
         return 'rejected'
       }
-      safeLog(options, { outcome: 'human', reasonCode: 'mode-changed', toolName: request.toolName })
+      safeLog(options, decisionRecord(request, {
+        outcome: 'human', reasonCode: 'mode-changed', mode: currentMode,
+      }))
       return next()
     }
     if (reviewFailed) return rejectOrHandoff(selectedMode, 'reviewer-error', request, next, options)
     const decision = assessment === null ? null : decisionFromAssessment(assessment)
     if (decision?.decision === 'reject') {
-      safeLog(options, { outcome: 'rejected', reasonCode: decision.reasonCode, toolName: request.toolName })
+      safeLog(options, decisionRecord(request, {
+        outcome: 'rejected', reasonCode: decision.reasonCode, mode: selectedMode,
+      }))
       return 'rejected'
     }
     if (decision?.decision === 'allow') {
-      safeLog(options, { outcome: 'allowed-once', reasonCode: decision.reasonCode, toolName: request.toolName })
+      safeLog(options, decisionRecord(request, {
+        outcome: 'allowed-once', reasonCode: decision.reasonCode, mode: selectedMode,
+      }))
       return 'allowed-once'
     }
     return rejectOrHandoff(selectedMode, decision?.reasonCode ?? 'invalid-review', request, next, options)
@@ -212,11 +243,26 @@ function rejectOrHandoff(
   options: SmartApprovalHandlerOptions,
 ): Promise<ApprovalOutcome> {
   if (mode === 'unattended') {
-    safeLog(options, { outcome: 'rejected', reasonCode, toolName: request.toolName })
+    safeLog(options, decisionRecord(request, { outcome: 'rejected', reasonCode, mode }))
     return Promise.resolve('rejected')
   }
-  safeLog(options, { outcome: 'human', reasonCode, toolName: request.toolName })
+  safeLog(options, decisionRecord(request, { outcome: 'human', reasonCode, mode }))
   return next()
+}
+
+/** Build the sanitized record shared by the operational log and the decision audit. */
+function decisionRecord(
+  request: ApprovalRequest,
+  fields: { outcome: DecisionOutcome, reasonCode: string, mode?: ReviewMode },
+): SmartApprovalLogRecord {
+  return {
+    session: request.agent.session,
+    toolName: request.toolName,
+    outcome: fields.outcome,
+    reasonCode: fields.reasonCode,
+    ...(fields.mode === undefined ? {} : { mode: fields.mode }),
+    ...(request.callId === undefined ? {} : { callId: request.callId }),
+  }
 }
 
 /** Keep logging failures from changing the approval outcome. */

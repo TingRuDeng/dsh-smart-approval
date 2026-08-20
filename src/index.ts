@@ -19,13 +19,17 @@ import {
   REVIEW_MODES, reviewModeProjectionSchema, viewReviewModeProjection,
 } from './review-mode.ts'
 import type { ReviewMode, ReviewModeProjectionState } from './review-mode.ts'
-import { reviewModeDomainSpec, ReviewModeStore } from './review-mode-storage.ts'
+import {
+  DecisionLogStore, reviewModeDomainSpec, ReviewModeStore, type DecisionEntry,
+} from './review-mode-storage.ts'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_MAX_TOKENS = 128
 const DEFAULT_MAX_TOOL_ARGUMENT_CHARS = 12_000
 const DEFAULT_MAX_USER_MESSAGES = 4
 const DEFAULT_MAX_USER_CONTEXT_CHARS = 8_000
+const DEFAULT_DECISION_LOG_SIZE = 50
+const DEFAULT_APPROVAL_LOG_COUNT = 10
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 /** Cordis plugin name used in diagnostics. */
@@ -38,9 +42,9 @@ export const inject = ['approval', 'llm', 'sessions', 'storageDomain', 'fs']
 export interface Config {
   /** Review mode used by sessions without an explicit selection. */
   readonly defaultMode?: ReviewMode
-  /** Optional dedicated reviewer provider; configure together with `reviewerModel`. */
+  /** Optional dedicated reviewer provider; configure together with reviewerModel. */
   readonly reviewerProvider?: string
-  /** Optional dedicated reviewer model; configure together with `reviewerProvider`. */
+  /** Optional dedicated reviewer model; configure together with reviewerProvider. */
   readonly reviewerModel?: string
   /** Whole reviewer-call deadline in milliseconds. */
   readonly timeoutMs?: number
@@ -52,6 +56,8 @@ export interface Config {
   readonly maxUserMessages?: number
   /** Maximum combined character count of included direct-user messages. */
   readonly maxUserContextChars?: number
+  /** Maximum persisted decision-audit entries per Session lifecycle; 0 disables the audit. */
+  readonly decisionLogSize?: number
 }
 
 /** Cordis configuration schema with conservative bounded defaults. */
@@ -64,11 +70,12 @@ export const Config: z<Config> = z.object({
   maxToolArgumentChars: z.number().step(1).min(1).default(DEFAULT_MAX_TOOL_ARGUMENT_CHARS),
   maxUserMessages: z.number().step(1).min(1).default(DEFAULT_MAX_USER_MESSAGES),
   maxUserContextChars: z.number().step(1).min(1).default(DEFAULT_MAX_USER_CONTEXT_CHARS),
+  decisionLogSize: z.number().step(1).min(0).default(DEFAULT_DECISION_LOG_SIZE),
 })
 
 /**
  * Register a prepended approval answerer. Mode is resolved from the durable
- * sidecar for every request, so `/approval-mode` changes take effect without
+ * sidecar for every request, so /approval-mode changes take effect without
  * plugin reload or extension events in the Session log.
  * @param ctx - Cordis context with DSH approval, session, storage, and LLM services.
  * @param config - optional reviewer route and bounded context limits.
@@ -95,6 +102,8 @@ async function mount(
   const domain = await ctx.storageDomain.open(reviewModeDomainSpec)
   ctx.effect(() => () => domain.close(), 'smart-approval: close review mode sidecar')
   const modeStore = new ReviewModeStore(domain.table('sessions'))
+  const decisionLogSize = config.decisionLogSize ?? DEFAULT_DECISION_LOG_SIZE
+  const decisionStore = new DecisionLogStore(domain.table('decisions'), decisionLogSize)
   const fallbackModes = new WeakMap<Session, ReviewMode>()
   const migrate = async (session: Session): Promise<void> => {
     const state = foldReviewModeEvents(session.events, defaultMode)
@@ -111,7 +120,7 @@ async function mount(
     try {
       await migrate(session)
     } catch (error) {
-      ctx.logger.warn(`smart-approval: failed to persist initial review mode: ${String(error)}`)
+      ctx.logger.warn('smart-approval: failed to persist initial review mode: ' + String(error))
     }
   })
   ctx.inject(['sessionProjections'], (scope) => {
@@ -132,13 +141,32 @@ async function mount(
       handler: async ({ agent, rawInput }) => {
         const mode = rawInput.trim()
         if (mode === '') {
-          return { kind: 'success', text: `current approval mode ${currentMode(agent.session)}` }
+          return { kind: 'success', text: 'current approval mode ' + currentMode(agent.session) }
         }
         if (!(REVIEW_MODES as readonly string[]).includes(mode)) {
-          return { kind: 'error', text: `unknown approval mode "${mode}" (available: ${REVIEW_MODES.join(', ')})` }
+          return { kind: 'error', text: 'unknown approval mode "' + mode + '" (available: ' + REVIEW_MODES.join(', ') + ')' }
         }
         await modeStore.set(agent.session, mode as ReviewMode)
-        return { kind: 'success', text: `approval mode ${mode}` }
+        return { kind: 'success', text: 'approval mode ' + mode }
+      },
+    })
+    scope.commands.register({
+      name: 'approval-log',
+      description: 'List automatic approval decisions in this session',
+      input: { hint: '[count]' },
+      handler: async ({ agent, rawInput }) => {
+        if (decisionLogSize === 0) {
+          return { kind: 'success', text: 'decision log disabled' }
+        }
+        const count = parseDecisionLogCount(rawInput)
+        if (count === undefined) {
+          return { kind: 'error', text: 'invalid approval-log count "' + rawInput.trim() + '"' }
+        }
+        const entries = decisionStore.list(agent.session).slice(-count).reverse()
+        if (entries.length === 0) {
+          return { kind: 'success', text: 'no automatic decisions in this session' }
+        }
+        return { kind: 'success', text: entries.map(formatDecisionEntry).join('\n') }
       },
     })
   })
@@ -153,9 +181,36 @@ async function mount(
       (ctx as Context & { fs: FileTargetFileSystem<FileProbeTarget> }).fs,
     ),
     review,
-    log: record => ctx.logger.info(
-      `smart-approval: ${record.outcome} (${record.reasonCode}) for tool ${JSON.stringify(record.toolName)}`,
-    ),
+    log: record => {
+      ctx.logger.info(
+        'smart-approval: ' + record.outcome + ' (' + record.reasonCode + ') for tool ' + JSON.stringify(record.toolName),
+      )
+      if (decisionLogSize === 0) return
+      void decisionStore.append(record.session, {
+        toolName: record.toolName,
+        outcome: record.outcome,
+        reasonCode: record.reasonCode,
+        ...(record.mode === undefined ? {} : { mode: record.mode }),
+        ...(record.callId === undefined ? {} : { callId: record.callId }),
+      }).catch(() => {
+        // The audit is a side channel: a failed write never changes the approval outcome.
+      })
+    },
   })
   ctx.on('approval/request', handler, { prepend: true })
+}
+
+/** Parse an optional positive audit count; undefined on malformed input. */
+function parseDecisionLogCount(rawInput: string): number | undefined {
+  const input = rawInput.trim()
+  if (input === '') return DEFAULT_APPROVAL_LOG_COUNT
+  if (!/^[1-9]\d*$/.test(input)) return undefined
+  return Number(input)
+}
+
+/** One audit line: time, tool, outcome, reason code, and active mode. */
+function formatDecisionEntry(entry: DecisionEntry): string {
+  const mode = entry.mode === undefined ? '' : ' [' + entry.mode + ']'
+  return new Date(entry.time).toISOString() + ' ' + entry.toolName + ' ' + entry.outcome
+    + ' (' + entry.reasonCode + ')' + mode
 }

@@ -556,3 +556,69 @@
 - 发布包复核：从 registry 实际下载的 tarball 为 56.1 kB，共 12 个预期文件，包含中英文 README、CHANGELOG、LICENSE、bundle patch、manifest 与构建产物；manifest 版本、作者、Node/DSH 兼容范围和公开发布配置正确。
 - 安装与安全：发布包中英文安装命令均固定为 rc.6，未残留 rc.1-rc.5 安装示例；本机绝对路径、私钥头和常见 Token 特征扫描无命中，未读取或输出 npm/provider 凭据。
 - 恢复策略：已发布版本不删除或覆盖；若后续发现问题，发布 rc.7 并重新调整 dist-tags。
+
+---
+
+## 2026-08-19 自动裁决持久审计（decision log）方案
+
+状态：已实施（2026-08-19），完整门禁通过。背景：运维排查时只能靠模式侧车加会话事件时间线交叉推断哪些 `allowed-once` 由插件放行——`ctx.logger` 的结果行不落盘，DSH 会话事件 `approval/decided` 不记录裁决者与 reasonCode。对自动审批插件而言"机器自主放行了什么"应当可查。
+
+实施记录与偏差：① 唯一未知数（同版本旧介质加表可开）已用两层测试钉死——真实 `JsonStorageBackend` 介质测试（tests/medium-open.spec.ts）+ 真实 `DomainFacility` 全链路测试（cordis Context → Storage hub → json backend → facility.open 新 spec → 旧 mode 行可读 → decisions 追加 → 重开仍在），退路方案未启用。② `SmartApprovalLogRecord` 除 mode/callId 外增加 `session` 字段：决策行以 Session 生命周期为键，log 回调是唯一咽喉点，session 必须随记录传递。③ 条目 `mode` 为可选字段：mode 解析器自身抛错（mode-error 路径）时无 mode 可记，此时命令输出省略 `[mode]` 段；正常路径 mode 始终在。④ 隔离 profile 冒烟仅完成到"树合成 + 存储行挂载"：无 provider 凭据且无头 CLI 无可见输出，未能驱动真实会话裁决；该验证项由真实 backend/facility 测试替代覆盖，留待有凭据环境复核。
+
+### 目标
+
+让插件的每次自动裁决成为可查的持久记录，会话内一条命令即可审计；保持"不落敏感内容"的日志红线不变。
+
+### 范围
+
+- 在现有 `smart_approval` storage-domain 中新增 `decisions` 表（独立于 mode 行：mode 行是每次审批的热路径读，保持最小；新旧插件版本混跑互不干扰；zod 校验边界互不影响）。
+- 行结构：`{ session: { createdAt, cwd? }, entries: [{ time, toolName, outcome, reasonCode, mode, callId? }] }`，环形缓冲上限 N（默认 50）。生命周期指纹与 mode 行同规则，不匹配即整行覆盖重建。
+- 域 `version` 保持 0 不变：`DomainSpec.version` 语义是"介质版本不同直接拒开"，提版本会让现有 `smart_approval.json` 拒开；同版本加表在旧介质中只是无数据，实施时用测试钉死可开。
+- 写入挂钩唯一咽喉点 `index.ts` 的 `log` 回调（`approval-handler.ts` 全路径经 `safeLog`）：`SmartApprovalLogRecord` 增加 `mode`（handler 已持有 `selectedMode`）与 `callId?`（`ApprovalRequest.callId`，纯 ID 无敏感性）；写入 fire-and-forget（`void store.append(...).catch(() => {})`），审计失败绝不影响审批结局——审计是旁路不是门禁。
+- 追加用 `KvTable.update()`（同域写链原子）；`update()` 对缺失键 reject，故首条 `put`、后续 `update` 两段式。
+- manual 模式在 handler 首行 `return next()`，天然不进 `safeLog`：decisions 表只含插件参与的裁决；表中 `human` 行意为"插件转人工"，人工终局仍以会话事件为准，`callId` 为两边对账连接键。
+- 新增 `/approval-log` 命令（与 `/approval-mode` 同一 `ctx.inject(['commands'])` 作用域并列注册）：无参数默认最近 10 条，`/approval-log 30` 最近 30 条；输出仅 `时间 工具 结局 (reasonCode) [mode]`，无参数无路径正文；空表输出 `no automatic decisions in this session`。
+- `Config` 增加 `decisionLogSize`（step 1、min 0、默认 50；0 = 完全关闭：不写表、命令返回 disabled）。
+- 中英文 README 安全边界节补充：审计仅含 outcome/reasonCode/toolName/callId，不含参数与模型输出，`decisionLogSize: 0` 可关；CHANGELOG 新条目，随 rc.7 基线的下一版本发布。
+
+### 不在范围内
+
+- 不新增 Session 事件类型（rc.4 的既定架构决策）。
+- 不写独立日志文件，不绕过 DSH 存储约定。
+- 不记录参数、提示词、模型推理；不做跨会话聚合报表。
+- 不改变 `ctx.logger.info` 现有输出（运维实时可见性保留）。
+
+### 验收标准
+
+- [x] smart/unattended 每次裁决后 `/approval-log` 立即可见对应行。
+- [x] manual 模式全程零写入。
+- [x] 注入审计写入故障时审批结局不变。
+- [x] 旧 `smart_approval.json`（version 0、仅 sessions 表）升级后正常打开，mode 行原样可读。
+- [x] 环形上限生效（第 N+1 条挤掉第 1 条）；`decisionLogSize: 0` 关闭行为正确。
+- [x] 存量 142 项测试与新增测试全绿，`pnpm run check` 通过。
+
+### 实施步骤
+
+- [x] 先以失败测试钉死：同版本旧介质加新表可开、有界追加、生命周期重建、首条 put/后续 update。
+- [x] 扩展 `review-mode-storage.ts`（decisions 表 + append/list）与 `SmartApprovalLogRecord`。
+- [x] `index.ts` 挂钩 log 回调、注册 `/approval-log`、新增 `decisionLogSize` 配置。
+- [x] 扩展 approval-handler/plugin 测试：mode/callId 传递、manual 零写入、故障不影响结局、命令输出。
+- [x] 更新中英文 README 与 CHANGELOG，执行完整门禁。
+
+### 验证方式
+
+- `pnpm test`
+- `pnpm run typecheck`
+- `pnpm run build`
+- 隔离 DSH profile：smart 模式触发若干自动裁决后 `/approval-log` 核对；切 manual 再触发审批核对零新增；重启 DSH 后记录仍在。
+
+### 回滚
+
+- 特性由 `decisionLogSize: 0` 运行时关闭；代码按本任务提交整体回退。
+- decisions 表数据为旁路审计，删除或忽略均不影响审批与模式功能，无迁移义务。
+
+### 风险与兜底
+
+- 同版本加表的打开语义为唯一可能改变方案形态的未知数，实施第一步先验证；若实测拒开，退路是把 entries 挂到 mode 行的可选字段（次优但可行）。
+- 写放大：每次自动裁决一次 KV put、50 条环形上限，可忽略。
+- 隐私：字段白名单在 zod schema 层硬编码，结构上放不进敏感内容。

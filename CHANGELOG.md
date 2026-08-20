@@ -4,6 +4,18 @@ All notable user-facing changes to `dsh-smart-approval` are documented here.
 This project is in developer preview, so release candidates may still change
 before `0.1.0`.
 
+## [0.1.0-rc.7] - 2026-08-19
+
+- Persist every automatic decision in a Session-bound `decisions` storage table
+  and expose it in-session through `/approval-log` (latest 10 by default,
+  `/approval-log 30` for more). Entries carry only time, tool name, outcome,
+  reason code, review mode, and tool-call id; `decisionLogSize: 0` disables
+  the audit.
+- Keep the audit strictly side-channel: a failed audit write never changes the
+  approval outcome, and manual mode writes nothing.
+- Open older same-version `smart_approval` media unchanged: the new table is
+  additive, so existing mode rows keep working without a storage-format bump.
+
 ## [0.1.0-rc.6] - 2026-08-16
 
 - Document the residual file-target TOCTOU window and the different containment

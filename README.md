@@ -134,6 +134,11 @@ the current session:
 continues to use DSH's native `/permission` command; the two command families do
 not rewrite each other's state.
 
+`/approval-log` lists this session's automatic decisions (the latest 10 by
+default, or `/approval-log 30` for the latest 30). Each line shows only the
+time, tool, outcome, reason code, and review mode; arguments and model output
+are never included. Set `decisionLogSize: 0` to disable the audit.
+
 Sessions without an explicit selection use `defaultMode`, which defaults to
 `smart`. Explicit selections are stored as a Session-bound `storage-domain`
 sidecar; an unselected session continues to follow the configured default so
@@ -211,6 +216,7 @@ route, override the plugin row in the profile's `cordis.patch.yml`:
 | `maxToolArgumentChars` | `12000` | Tool-argument limit; overflow fails closed without truncation |
 | `maxUserMessages` | `4` | Current plus recent direct-user message limit; older history is omitted explicitly |
 | `maxUserContextChars` | `8000` | User-context limit; the current turn is never truncated, while older history may be omitted explicitly |
+| `decisionLogSize` | `50` | Decision-audit entries kept per Session lifecycle; `0` disables the audit entirely |
 
 The bundle does not override the `permission` row, so it does not replace a
 profile's existing permission presets.
@@ -240,6 +246,11 @@ profile's existing permission presets.
   precedent, or permanent grant.
 - Logs contain tool name, outcome, and short reason code, not full prompts,
   arguments, credentials, or model reasoning.
+- The persistent decision audit (`/approval-log`) stores only the time, tool
+  name, outcome, reason code, review mode, and tool-call id per decision. It
+  never stores arguments, prompts, user text, or model output, and it is
+  disabled by `decisionLogSize: 0`. Audit writes are a side channel: a failed
+  audit write never changes the approval outcome.
 - Smart fallback and manual mode require another Web, ACP, or custom human
   answerer. Without one, DSH remains fail-closed.
 - File-target inspection happens before approval and execution, so a path can
@@ -260,7 +271,7 @@ profile's existing permission presets.
 |---|---|
 | `src/index.ts` | Service injection, legacy migration, projection, command, and lifecycle |
 | `src/review-mode.ts` | Legacy-event migration, command lifecycle fold, and browser projection |
-| `src/review-mode-storage.ts` | Session-lifecycle-bound automatic-review mode sidecar |
+| `src/review-mode-storage.ts` | Session-lifecycle-bound review-mode sidecar and decision-audit table |
 | `src/client/` | Web selector and browser-plugin registration |
 | `src/approval-handler.ts` | Three-mode routing, waterfall decisions, and post-review mode recheck |
 | `src/review-context.ts` | Closed action adapters and bounded direct-user context extraction |

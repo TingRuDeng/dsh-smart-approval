@@ -795,4 +795,55 @@ describe('createSmartApprovalHandler', () => {
       reasonCode: 'context-error',
     }))
   })
+
+  it('attaches the session, active mode, and callId to every decision record', async () => {
+    const { handler, next, log } = setup({ mode: 'unattended', assessment: maliciousAssessment })
+    const request = requestOf()
+    await expect(handler(request, next)).resolves.toBe('rejected')
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      session: request.agent.session,
+      mode: 'unattended',
+      callId,
+      outcome: 'rejected',
+      reasonCode: 'credential-exfiltration',
+    }))
+  })
+
+  it('records the mode that produced a mode-changed outcome', async () => {
+    let selectedMode: ReviewMode = 'smart'
+    const review = vi.fn(async () => {
+      selectedMode = 'unattended'
+      return benignBuildAssessment
+    })
+    const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
+    const log = vi.fn()
+    const handler = createSmartApprovalHandler({
+      currentMode: () => selectedMode,
+      limits: { maxToolArgumentChars: 12_000, maxUserMessages: 4, maxUserContextChars: 8_000 },
+      review,
+      log,
+    })
+
+    await expect(handler(requestOf(), next)).resolves.toBe('rejected')
+    expect(next).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'rejected',
+      reasonCode: 'mode-changed',
+      mode: 'unattended',
+    }))
+  })
+
+  it('keeps the decision when the log callback itself throws', async () => {
+    const review = vi.fn(async () => benignBuildAssessment)
+    const next = vi.fn(async (): Promise<ApprovalOutcome> => 'rejected')
+    const handler = createSmartApprovalHandler({
+      currentMode: () => 'smart',
+      limits: { maxToolArgumentChars: 12_000, maxUserMessages: 4, maxUserContextChars: 8_000 },
+      review,
+      log: () => { throw new Error('logger unavailable') },
+    })
+
+    await expect(handler(requestOf(), next)).resolves.toBe('allowed-once')
+    expect(next).not.toHaveBeenCalled()
+  })
 })

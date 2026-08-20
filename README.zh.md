@@ -122,6 +122,9 @@ dsh plugin --profile web remove dsh-smart-approval
 不带参数的 `/approval-mode` 返回当前模式。访问权限仍使用 DSH 原生 `/permission` 命令，两套命令
 不会互相改写状态。
 
+`/approval-log` 列出本会话的自动裁决记录（默认最近 10 条，`/approval-log 30` 查看最近 30 条）。每行
+只包含时间、工具、结局、原因码和审查模式，绝不含参数与模型输出；配置 `decisionLogSize: 0` 可关闭审计。
+
 尚未明确选择模式的会话使用配置的 `defaultMode`，默认是 `smart`。明确选择的模式保存在 DSH
 `storage-domain` 的会话伴随记录中；未选择的会话继续跟随当前默认值，确保修改配置后审批行为与
 浏览器投影一致。插件不会向不可移植的 Session 事件日志追加自定义事件。从早期预览版升级时，
@@ -179,6 +182,7 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 | `maxToolArgumentChars` | `12000` | 工具参数上限；超限时不截断并失败关闭 |
 | `maxUserMessages` | `4` | 当前及近期直接用户消息上限；省略旧历史时会明确标记 |
 | `maxUserContextChars` | `8000` | 用户上下文上限；当前 turn 不截断，旧历史可带标记地省略 |
+| `decisionLogSize` | `50` | 每个会话生命周期保留的裁决审计条数；`0` 完全关闭审计 |
 
 本插件的 bundle 不覆盖 `permission` 行，因此不会替换 profile 已有的权限预设。
 
@@ -195,6 +199,9 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
   审批转人工，无人值守拒绝。
 - 每次自动授权只对当前调用有效，重复申请也会重新审查；不保存决策缓存、目录白名单、审批先例或永久授权。
 - 日志只记录工具名、结果和短原因码，不记录完整提示、参数、凭据或模型推理。
+- 持久裁决审计（`/approval-log`）每条只保存时间、工具名、结局、原因码、审查模式和工具调用 id，
+  绝不保存参数、提示、用户文本或模型输出，并可通过 `decisionLogSize: 0` 关闭。审计写入是旁路通道：
+  写入失败不会改变审批结局。
 - 智能审批的人工回退和人工审批需要其他 Web、ACP 或自定义人工 answerer；如果不存在，DSH 保持失败关闭。
 - 文件目标检查发生在审批和实际执行之前，期间理论上可能发生路径替换（TOCTOU）。在 `workspace-write` 下，
   DSH 会在执行变更前再次规范化并检查目标，这会缩小但不能消除竞态；一次性 `danger-full-access` 拥有宽泛
@@ -209,7 +216,7 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 |---|---|
 | `src/index.ts` | 服务注入、旧会话迁移、投影、命令和生命周期 |
 | `src/review-mode.ts` | 旧事件只读迁移、命令生命周期折叠和浏览器投影 |
-| `src/review-mode-storage.ts` | Session 生命周期绑定的自动审查模式伴随存储 |
+| `src/review-mode-storage.ts` | Session 生命周期绑定的审查模式伴随存储与裁决审计表 |
 | `src/client/` | Web 端独立自动审查选择框和客户端插件注册 |
 | `src/approval-handler.ts` | 三模式路由、waterfall 决策和审核后模式复核 |
 | `src/review-context.ts` | 封闭动作适配器和有界的直接用户上下文提取 |
