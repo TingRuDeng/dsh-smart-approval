@@ -33,7 +33,7 @@ export function apply(ctx: ClientContext): void {
     locale: 'approval-review',
     inject: (sessionId: SessionId): ReviewModeSelectInjected => ({
       select: async (mode: ReviewMode) => {
-        const result = await ctx.remote.commands.execute(sessionId, `/approval-mode ${mode}`)
+        const result = await ctx.remote.commands.execute(sessionId, `/approval-mode ${mode}`, [])
         return result.ok && result.value !== undefined && result.value.result.kind === 'success'
       },
     }),

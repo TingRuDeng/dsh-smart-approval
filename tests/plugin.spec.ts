@@ -407,9 +407,13 @@ describe('plugin entry', () => {
       handler: (input: { agent: Agent; rawInput: string }) => Promise<{ kind: string; text?: string }>
     }[] = []
     let projection: {
+      stateSchema: { parse: (value: unknown) => unknown }
       init: () => unknown
       apply: (state: unknown, event: SessionEvent) => unknown
-      view: (state: unknown) => unknown
+      wire: {
+        viewSchema: { parse: (value: unknown) => unknown }
+        view: (state: unknown) => unknown
+      }
     } | undefined
     const storage = storageBench()
     const ctx = {
@@ -432,7 +436,9 @@ describe('plugin entry', () => {
 
     await apply(ctx, {})
     expect(commands.map(entry => entry.name)).toEqual(['approval-mode', 'approval-log'])
-    expect(projection?.view(projection.init())).toEqual({ mode: 'smart' })
+    const initialState = projection?.stateSchema.parse(projection.init())
+    expect(initialState).toEqual({ mode: 'smart', fallback: 'smart', origin: 'default' })
+    expect(projection?.wire.viewSchema.parse(projection.wire.view(initialState))).toEqual({ mode: 'smart' })
     const modeCommand = commands.find(entry => entry.name === 'approval-mode')!
 
     const events = [

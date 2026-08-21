@@ -4,6 +4,14 @@ All notable user-facing changes to `dsh-smart-approval` are documented here.
 This project is in developer preview, so release candidates may still change
 before `0.1.0`.
 
+## [0.1.0-rc.8] - 2026-08-21
+
+- Require DeepSeek Harness `0.1.1-rc.1` or later and migrate the review-mode
+  projection to the host-state and client-wire registration API introduced in
+  that release.
+- Validate persisted review-mode fold state independently from the browser
+  projection payload.
+
 ## [0.1.0-rc.7] - 2026-08-19
 
 - Persist every automatic decision in a Session-bound `decisions` storage table

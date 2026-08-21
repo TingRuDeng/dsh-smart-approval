@@ -20,7 +20,7 @@ export interface ReviewModeProjection {
 export interface ReviewModeProjectionState extends ReviewModeProjection {
   readonly fallback: ReviewMode
   readonly origin: 'default' | 'legacy' | 'independent'
-  readonly pending?: Readonly<Record<string, ReviewMode>>
+  readonly pending?: Readonly<Record<string, ReviewMode>> | undefined
 }
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
@@ -28,12 +28,25 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
     /** Automatic approval review mode for the session. */
     approvalReview: ReviewModeProjection
   }
+
+  interface SessionProjectionStateMap {
+    /** Host fold state for the automatic approval review mode. */
+    approvalReview: ReviewModeProjectionState
+  }
 }
 
 /** Runtime schema for the browser projection. */
 export const reviewModeProjectionSchema: zod.ZodType<ReviewModeProjection> = zod.object({
   mode: zod.enum(REVIEW_MODES),
 })
+
+/** Runtime schema for persisted automatic review mode fold state. */
+export const reviewModeProjectionStateSchema: zod.ZodType<ReviewModeProjectionState> = zod.object({
+  mode: zod.enum(REVIEW_MODES),
+  fallback: zod.enum(REVIEW_MODES),
+  origin: zod.enum(['default', 'legacy', 'independent']),
+  pending: zod.record(zod.string(), zod.enum(REVIEW_MODES)).optional(),
+}).strict()
 
 /** Recommended mode for newly created sessions. */
 export const DEFAULT_REVIEW_MODE: ReviewMode = 'smart'

@@ -7,7 +7,7 @@ const SESSION_ID = 'review-mode-session'
 
 function bench() {
   let registration: { options: { name: string; id?: string; order?: number }; component: unknown; inject?: unknown } | undefined
-  const execute = vi.fn((_sessionId: string, _line: string) => Promise.resolve({
+  const execute = vi.fn((_sessionId: string, _line: string, _images: readonly unknown[]) => Promise.resolve({
     ok: true,
     value: { commandId: 'command-1', result: { kind: 'success' as const } },
   }))
@@ -39,6 +39,6 @@ describe('smart approval browser plugin', () => {
     const injected = (entry?.inject as unknown as (id: string) => ReviewModeSelectInjected)(SESSION_ID)
 
     await expect(injected.select('unattended')).resolves.toBe(true)
-    expect(b.execute).toHaveBeenCalledWith(SESSION_ID, '/approval-mode unattended')
+    expect(b.execute).toHaveBeenCalledWith(SESSION_ID, '/approval-mode unattended', [])
   })
 })

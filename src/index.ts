@@ -16,7 +16,8 @@ import {
 import { createLlmReviewer, resolveLlmReviewerConfig } from './llm-reviewer.ts'
 import {
   applyReviewModeEvent, DEFAULT_REVIEW_MODE, foldReviewModeEvents, initialReviewModeState,
-  REVIEW_MODES, reviewModeProjectionSchema, viewReviewModeProjection,
+  REVIEW_MODES, reviewModeProjectionSchema, reviewModeProjectionStateSchema,
+  viewReviewModeProjection,
 } from './review-mode.ts'
 import type { ReviewMode, ReviewModeProjectionState } from './review-mode.ts'
 import {
@@ -126,10 +127,13 @@ async function mount(
   ctx.inject(['sessionProjections'], (scope) => {
     scope.sessionProjections.register<'approvalReview', ReviewModeProjectionState>({
       key: 'approvalReview',
-      schema: reviewModeProjectionSchema,
+      stateSchema: reviewModeProjectionStateSchema,
       init: () => initialReviewModeState(defaultMode),
       apply: applyReviewModeEvent,
-      view: viewReviewModeProjection,
+      wire: {
+        viewSchema: reviewModeProjectionSchema,
+        view: viewReviewModeProjection,
+      },
       stateVersion: 3,
     })
   })

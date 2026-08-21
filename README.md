@@ -43,14 +43,14 @@ switches a session to Full access.
 ### Requirements
 
 - Node.js 24 or later.
-- DeepSeek Harness `>=0.1.0-rc.5 <0.2.0`.
+- DeepSeek Harness `>=0.1.1-rc.1 <0.2.0`.
 - `pnpm` on `PATH`; DSH forwards plugin-management operations to pnpm.
 
 After installing the DSH CLI globally:
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.0-rc.7
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.7
+npm install --global @deepseek-ai/dsh@0.1.1-rc.1
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.8
 dsh --profile web --dump-config
 dsh web
 ```
@@ -58,9 +58,9 @@ dsh web
 For one-off execution:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.7 plugin --profile web add dsh-smart-approval@0.1.0-rc.7
-npx @deepseek-ai/dsh@0.1.0-rc.7 --profile web --dump-config
-npx @deepseek-ai/dsh@0.1.0-rc.7 web
+npx @deepseek-ai/dsh@0.1.1-rc.1 plugin --profile web add dsh-smart-approval@0.1.0-rc.8
+npx @deepseek-ai/dsh@0.1.1-rc.1 --profile web --dump-config
+npx @deepseek-ai/dsh@0.1.1-rc.1 web
 ```
 
 `npm dsh ...` is not a valid npm command. Use `dsh ...` after a global install,
@@ -298,7 +298,7 @@ pnpm run build
 pnpm pack --dry-run
 ```
 
-The supported DSH range is `>=0.1.0-rc.5 <0.2.0`. Real-provider end-to-end
+The supported DSH range is `>=0.1.1-rc.1 <0.2.0`. Real-provider end-to-end
 review and human-fallback interaction still require deployment credentials and
 environment-specific acceptance testing.
 
