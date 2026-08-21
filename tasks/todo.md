@@ -622,3 +622,57 @@
 - 同版本加表的打开语义为唯一可能改变方案形态的未知数，实施第一步先验证；若实测拒开，退路是把 entries 挂到 mode 行的可选字段（次优但可行）。
 - 写放大：每次自动裁决一次 KV put、50 条环形上限，可忽略。
 - 隐私：字段白名单在 zod schema 层硬编码，结构上放不进敏感内容。
+
+---
+
+## 2026-08-21 发布 0.1.0-rc.7
+
+### 目标
+
+将已实施的自动裁决持久审计（decisions 表 + `/approval-log`）作为 `dsh-smart-approval@0.1.0-rc.7` 提交、推送并发布，使 npm `latest` 与 `next` 同时指向 rc.7。
+
+### 范围
+
+- 将插件版本和中英文安装示例从 rc.6 提升到 rc.7（含 DSH CLI 安装命令，DSH 本身已发布 rc.7）。
+- CHANGELOG 新增 rc.7 条目（日期沿用实施日 2026-08-19）。
+- 测试基线：存量 142 项 + 新增 18 项 = 160 项，`tests/medium-open.spec.ts` 用真实 JsonStorageBackend + DomainFacility 钉死同版本加表可开。
+- 提交并推送 `main`，发布 npm rc.7 并更新 `latest`、`next`。
+
+### 验收标准
+
+- [x] `package.json`、README 和 CHANGELOG 版本一致为 rc.7。
+- [x] 完整本地门禁、发布包内容和敏感信息检查通过。
+- [x] GitHub `main` 远端 SHA 与本地发布提交一致，CI 成功。
+- [x] npm 存在 `0.1.0-rc.7`，且 `latest`、`next` 均指向 rc.7。
+- [x] 发布后包元数据、文件清单和安装命令复核通过。
+
+### 实施步骤
+
+- [x] 提交决策审计实现（`ec5c033`），核对工作区与敏感信息。
+- [x] 提升 rc.7 版本元数据与安装文档，执行完整发布门禁。
+- [x] 提交并推送 rc.7（`7878401`），等待 GitHub CI 成功。
+- [x] 完成 npm 发布、dist-tags 更新（`latest` + `next`）和 registry 复核。
+
+### 验证方式
+
+- `pnpm run check`（160 项测试、类型检查、双入口构建）
+- `pnpm audit --prod`
+- `npm pack --dry-run --ignore-scripts`（任务专用临时缓存）
+- `git diff --check` 与新增行敏感信息扫描
+- `npm view dsh-smart-approval@0.1.0-rc.7` 与 `npm view dsh-smart-approval dist-tags`
+- registry tarball 实际下载清点与安装命令复核
+
+### 回滚
+
+- npm 已发布版本不删除、不覆盖；发现问题时发布更高的 rc.8 修复，并调整 dist-tags。
+- GitHub 使用新提交修复或回退，不强制改写 `main` 历史。
+
+### Review
+
+- 发布提交：`7878401ae24654dea08379736307705f8cd69c7c` 已推送到 GitHub `main`，远端 SHA 一致；GitHub Actions run `32346790136` 结论为 `success`。
+- 本地门禁：`pnpm run check` 退出 0，9 个测试文件共 160 项测试通过（存量 142 + 新增 18），类型检查和双入口构建成功；`pnpm audit --prod` 未发现已知漏洞；`git diff --check` 通过，密钥/token/本机路径扫描无命中。
+- npm 发布：registry 已收录 `dsh-smart-approval@0.1.0-rc.7`，`latest` 与 `next` 均指向 rc.7；发布包完整性为 registry 返回的 `sha512-bOwbf68hGUxxHwy0kcs/7bV59m666N26MMBw9mhyIKwNTL9EZtgk1BmZEid1XTb4DiOOLrr/Kl3kWHHeJVOKDg==`（shasum `8ac802a38035de40cd09176b2eaf9bd08e00c83d`，与本地 dry-run pack 一致）。
+- 发布包复核：从 registry 实际下载的 tarball 为 59.9 kB，共 12 个预期文件，包含中英文 README、CHANGELOG、LICENSE、bundle patch、manifest 与构建产物；manifest 版本、作者、Node/DSH 兼容范围和公开发布配置正确；lib/index.js 含 `approval-log` 命令与 `decisionLogSize` 配置。
+- 安装与安全：发布包中英文安装命令均固定为 rc.7（各 5 处），未残留 rc.6 安装示例；bundle 内 `BEGIN PRIVATE KEY` 命中为插件自身的凭据检测正则（SENSITIVE_VALUE），非真实密钥；未读取或输出 npm/provider 凭据。
+- 发布过程：`npm publish` 首次因 EOTP 中止（未发布任何内容），随后 npm token 一度失效；经用户重新 `npm login` 后完成发布，dist-tags 更新与 OTP 由用户在终端完成。
+- 恢复策略：已发布版本不删除或覆盖；若后续发现问题，发布 rc.8 并重新调整 dist-tags。
