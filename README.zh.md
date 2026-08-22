@@ -38,13 +38,13 @@ Web 输入框底部应显示两个控件：
 ### 环境要求
 
 - Node.js 24 或更高版本。
-- DeepSeek Harness `>=0.1.1-rc.1 <0.2.0`。
+- DeepSeek Harness `>=0.1.1-rc.1 <0.2.0`（当前验证基线：`0.1.1-rc.2`）。
 - `PATH` 中存在 `pnpm`；DSH 会把插件管理操作转发给 pnpm。
 
 全局安装 DSH 后：
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.1-rc.1
+npm install --global @deepseek-ai/dsh@0.1.1-rc.2
 dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.8
 dsh --profile web --dump-config
 dsh web
@@ -53,9 +53,9 @@ dsh web
 一次性运行：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.1-rc.1 plugin --profile web add dsh-smart-approval@0.1.0-rc.8
-npx @deepseek-ai/dsh@0.1.1-rc.1 --profile web --dump-config
-npx @deepseek-ai/dsh@0.1.1-rc.1 web
+npx @deepseek-ai/dsh@0.1.1-rc.2 plugin --profile web add dsh-smart-approval@0.1.0-rc.8
+npx @deepseek-ai/dsh@0.1.1-rc.2 --profile web --dump-config
+npx @deepseek-ai/dsh@0.1.1-rc.2 web
 ```
 
 `npm dsh ...` 不是合法的 npm 命令。全局安装后使用 `dsh ...`，一次性运行使用
@@ -240,7 +240,7 @@ pnpm run build
 pnpm pack --dry-run
 ```
 
-支持的 DSH 范围是 `>=0.1.1-rc.1 <0.2.0`。真实 provider 的端到端审核和人工回退交互仍依赖部署凭据
+支持的 DSH 范围是 `>=0.1.1-rc.1 <0.2.0`，当前验证基线是 `0.1.1-rc.2`。真实 provider 的端到端审核和人工回退交互仍依赖部署凭据
 与具体环境验收。
 
 ## License

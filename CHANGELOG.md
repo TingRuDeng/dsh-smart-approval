@@ -11,6 +11,8 @@ before `0.1.0`.
   that release.
 - Validate persisted review-mode fold state independently from the browser
   projection payload.
+- Verify the plugin against DeepSeek Harness `0.1.1-rc.2`; development
+  dependencies and the lockfile now pin that release candidate.
 
 ## [0.1.0-rc.7] - 2026-08-19
 
