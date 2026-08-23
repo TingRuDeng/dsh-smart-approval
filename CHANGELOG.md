@@ -4,6 +4,12 @@ All notable user-facing changes to `dsh-smart-approval` are documented here.
 This project is in developer preview, so release candidates may still change
 before `0.1.0`.
 
+## [0.1.0-rc.9] - 2026-08-23
+
+- Reissue the formal release candidate with npm Trusted Publishing enabled for
+  the GitHub Actions release workflow; runtime behavior remains aligned with
+  `0.1.0-rc.8`.
+
 ## [0.1.0-rc.8] - 2026-08-21
 
 - Require DeepSeek Harness `0.1.1-rc.1` or later and migrate the review-mode
