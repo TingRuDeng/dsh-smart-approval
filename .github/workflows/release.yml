@@ -1,0 +1,476 @@
+name: Release RC
+
+permissions: {}
+
+on:
+  push:
+    tags:
+      - 'v*-rc.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      package_name: ${{ steps.contract.outputs.package_name }}
+      version: ${{ steps.contract.outputs.version }}
+      tag: ${{ steps.contract.outputs.tag }}
+      tarball: ${{ steps.contract.outputs.tarball }}
+      tarball_sha256: ${{ steps.contract.outputs.tarball_sha256 }}
+      tarball_integrity: ${{ steps.contract.outputs.tarball_integrity }}
+      checksums: ${{ steps.contract.outputs.checksums }}
+      checksums_sha256: ${{ steps.contract.outputs.checksums_sha256 }}
+      sbom: ${{ steps.contract.outputs.sbom }}
+      sbom_sha256: ${{ steps.contract.outputs.sbom_sha256 }}
+      descriptor_sha256: ${{ steps.contract.outputs.descriptor_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          path: dsh-smart-approval
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+          path: deepseek-harness
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.1
+      - name: Pin package managers
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.18.0 --activate
+          npm install --global npm@11.16.0
+      - name: Build Harness host libraries
+        working-directory: deepseek-harness
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build:lib:host
+      - name: Build the sole formal tarball
+        working-directory: dsh-smart-approval
+        env:
+          DSH_RELEASE_ARTIFACT_DIR: ${{ github.workspace }}/formal-artifacts
+          DSH_RELEASE_HARNESS_ROOT: ${{ github.workspace }}/deepseek-harness
+        run: pnpm run release:formal
+      - name: Verify and describe formal artifacts
+        id: contract
+        env:
+          ARTIFACT_DIR: ${{ github.workspace }}/formal-artifacts
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs'
+          import { createHash } from 'node:crypto'
+          import { basename, join } from 'node:path'
+
+          const descriptor = JSON.parse(readFileSync(join(process.env.ARTIFACT_DIR, 'release.json'), 'utf8'))
+          const fail = message => { throw new Error(message) }
+          const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex')
+          const safe = (value, label) => {
+            if (typeof value !== 'string' || value === '' || basename(value) !== value) fail(`invalid ${label}`)
+            return value
+          }
+          const tarball = safe(descriptor.artifacts?.tarball?.filename, 'tarball filename')
+          const checksums = safe(descriptor.artifacts?.checksums?.filename, 'checksum filename')
+          const sbom = safe(descriptor.artifacts?.sbom?.filename, 'SBOM filename')
+          if (descriptor.publishable !== true) fail('formal descriptor is not publishable')
+          if (descriptor.source?.repository !== process.env.GITHUB_REPOSITORY) fail('repository mismatch')
+          if (descriptor.source?.gitSha !== process.env.GITHUB_SHA) fail('source SHA mismatch')
+          if (descriptor.source?.tag !== process.env.GITHUB_REF_NAME) fail('source tag mismatch')
+          if (descriptor.source?.workflow !== '.github/workflows/release.yml') fail('workflow mismatch')
+          if (`v${descriptor.package?.version}` !== descriptor.source.tag) fail('version/tag mismatch')
+          if (checksums !== 'SHA256SUMS') fail('unexpected checksum filename')
+          const tarballHash = hash(join(process.env.ARTIFACT_DIR, tarball))
+          const checksumsHash = hash(join(process.env.ARTIFACT_DIR, checksums))
+          const sbomHash = hash(join(process.env.ARTIFACT_DIR, sbom))
+          if (tarballHash !== descriptor.artifacts.tarball.sha256) fail('tarball digest mismatch')
+          if (checksumsHash !== descriptor.artifacts.checksums.sha256) fail('checksum digest mismatch')
+          if (sbomHash !== descriptor.artifacts.sbom.sha256) fail('SBOM digest mismatch')
+          if (readFileSync(join(process.env.ARTIFACT_DIR, checksums), 'utf8') !== `${tarballHash}  ${tarball}\n`) {
+            fail('checksum content mismatch')
+          }
+          const outputs = {
+            package_name: descriptor.package.name,
+            version: descriptor.package.version,
+            tag: descriptor.source.tag,
+            tarball,
+            tarball_sha256: tarballHash,
+            tarball_integrity: descriptor.artifacts.tarball.integrity,
+            checksums,
+            checksums_sha256: checksumsHash,
+            sbom,
+            sbom_sha256: sbomHash,
+            descriptor_sha256: hash(join(process.env.ARTIFACT_DIR, 'release.json')),
+          }
+          for (const [key, value] of Object.entries(outputs)) {
+            if (typeof value !== 'string' || /[\r\n]/u.test(value)) fail(`invalid output ${key}`)
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `${Object.entries(outputs).map(([key, value]) => `${key}=${value}`).join('\n')}\n`)
+          NODE
+      - name: Upload verified formal artifacts
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: formal-${{ github.ref_name }}
+          path: |
+            ${{ github.workspace }}/formal-artifacts/${{ steps.contract.outputs.tarball }}
+            ${{ github.workspace }}/formal-artifacts/${{ steps.contract.outputs.checksums }}
+            ${{ github.workspace }}/formal-artifacts/${{ steps.contract.outputs.sbom }}
+            ${{ github.workspace }}/formal-artifacts/release.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  build_attest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      package_name: ${{ needs.build.outputs.package_name }}
+      version: ${{ needs.build.outputs.version }}
+      tag: ${{ needs.build.outputs.tag }}
+      tarball: ${{ needs.build.outputs.tarball }}
+      tarball_sha256: ${{ needs.build.outputs.tarball_sha256 }}
+      tarball_integrity: ${{ needs.build.outputs.tarball_integrity }}
+      checksums: ${{ needs.build.outputs.checksums }}
+      checksums_sha256: ${{ needs.build.outputs.checksums_sha256 }}
+      sbom: ${{ needs.build.outputs.sbom }}
+      sbom_sha256: ${{ needs.build.outputs.sbom_sha256 }}
+      descriptor_sha256: ${{ needs.build.outputs.descriptor_sha256 }}
+      provenance_bundle_sha256: ${{ steps.payload.outputs.provenance_bundle_sha256 }}
+      sbom_bundle_sha256: ${{ steps.payload.outputs.sbom_bundle_sha256 }}
+    steps:
+      - name: Reject release workflow reruns
+        run: test "${{ github.run_attempt }}" = 1
+      - name: Download verified formal artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ github.workspace }}/formal-artifacts
+          merge-multiple: true
+      - name: Verify artifacts before granting attestation authority
+        env:
+          ARTIFACT_DIR: ${{ github.workspace }}/formal-artifacts
+          TARBALL: ${{ needs.build.outputs.tarball }}
+          TARBALL_SHA256: ${{ needs.build.outputs.tarball_sha256 }}
+          CHECKSUMS: ${{ needs.build.outputs.checksums }}
+          CHECKSUMS_SHA256: ${{ needs.build.outputs.checksums_sha256 }}
+          SBOM: ${{ needs.build.outputs.sbom }}
+          SBOM_SHA256: ${{ needs.build.outputs.sbom_sha256 }}
+          DESCRIPTOR_SHA256: ${{ needs.build.outputs.descriptor_sha256 }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto'
+          import { readFileSync, readdirSync } from 'node:fs'
+          import { join } from 'node:path'
+          const expected = new Map([
+            [process.env.TARBALL, process.env.TARBALL_SHA256],
+            [process.env.CHECKSUMS, process.env.CHECKSUMS_SHA256],
+            [process.env.SBOM, process.env.SBOM_SHA256],
+            ['release.json', process.env.DESCRIPTOR_SHA256],
+          ])
+          const actual = readdirSync(process.env.ARTIFACT_DIR).sort()
+          const names = [...expected.keys()].sort()
+          if (actual.length !== names.length || actual.some((name, index) => name !== names[index])) throw new Error(`artifact set mismatch: ${actual.join(', ')}`)
+          for (const [name, digest] of expected) {
+            const actualDigest = createHash('sha256').update(readFileSync(join(process.env.ARTIFACT_DIR, name))).digest('hex')
+            if (actualDigest !== digest) throw new Error(`artifact digest mismatch: ${name}`)
+          }
+          NODE
+      - name: Attest build provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ github.workspace }}/formal-artifacts/${{ needs.build.outputs.tarball }}
+            ${{ github.workspace }}/formal-artifacts/${{ needs.build.outputs.checksums }}
+            ${{ github.workspace }}/formal-artifacts/${{ needs.build.outputs.sbom }}
+            ${{ github.workspace }}/formal-artifacts/release.json
+      - name: Attest CycloneDX SBOM
+        id: sbom_attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ github.workspace }}/formal-artifacts/${{ needs.build.outputs.tarball }}
+          predicate-type: https://cyclonedx.org/bom
+          predicate-path: ${{ github.workspace }}/formal-artifacts/${{ needs.build.outputs.sbom }}
+      - name: Verify GitHub attestations
+        env:
+          ARTIFACT_DIR: ${{ github.workspace }}/formal-artifacts
+          TARBALL: ${{ needs.build.outputs.tarball }}
+          CHECKSUMS: ${{ needs.build.outputs.checksums }}
+          SBOM: ${{ needs.build.outputs.sbom }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          SBOM_BUNDLE: ${{ steps.sbom_attestation.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          for file in "$TARBALL" "$CHECKSUMS" "$SBOM" release.json; do
+            gh attestation verify "$ARTIFACT_DIR/$file" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$PROVENANCE_BUNDLE" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --signer-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+          gh attestation verify "$ARTIFACT_DIR/$TARBALL" --repo "$GITHUB_REPOSITORY" \
+            --bundle "$SBOM_BUNDLE" --predicate-type https://cyclonedx.org/bom \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --signer-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners
+      - name: Assemble immutable release payload
+        id: payload
+        env:
+          ARTIFACT_DIR: ${{ github.workspace }}/formal-artifacts
+          PAYLOAD_DIR: ${{ github.workspace }}/release-payload
+          TARBALL: ${{ needs.build.outputs.tarball }}
+          CHECKSUMS: ${{ needs.build.outputs.checksums }}
+          SBOM: ${{ needs.build.outputs.sbom }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          SBOM_BUNDLE: ${{ steps.sbom_attestation.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          mkdir "$PAYLOAD_DIR"
+          cp "$ARTIFACT_DIR/$TARBALL" "$PAYLOAD_DIR/$TARBALL"
+          cp "$ARTIFACT_DIR/$CHECKSUMS" "$PAYLOAD_DIR/$CHECKSUMS"
+          cp "$ARTIFACT_DIR/$SBOM" "$PAYLOAD_DIR/$SBOM"
+          cp "$ARTIFACT_DIR/release.json" "$PAYLOAD_DIR/release.json"
+          cp "$PROVENANCE_BUNDLE" "$PAYLOAD_DIR/provenance.bundle.json"
+          cp "$SBOM_BUNDLE" "$PAYLOAD_DIR/sbom.bundle.json"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs'
+          import { createHash } from 'node:crypto'
+          import { join } from 'node:path'
+          const hash = name => createHash('sha256').update(readFileSync(join(process.env.PAYLOAD_DIR, name))).digest('hex')
+          appendFileSync(process.env.GITHUB_OUTPUT, `provenance_bundle_sha256=${hash('provenance.bundle.json')}\nsbom_bundle_sha256=${hash('sbom.bundle.json')}\n`)
+          NODE
+      - name: Upload the sole release payload
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ github.ref_name }}
+          path: ${{ github.workspace }}/release-payload
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  stage_draft:
+    needs: build_attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      artifact_id: ${{ needs.build_attest.outputs.artifact_id }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      package_name: ${{ needs.build_attest.outputs.package_name }}
+      version: ${{ needs.build_attest.outputs.version }}
+      tag: ${{ needs.build_attest.outputs.tag }}
+      tarball: ${{ needs.build_attest.outputs.tarball }}
+      tarball_sha256: ${{ needs.build_attest.outputs.tarball_sha256 }}
+      tarball_integrity: ${{ needs.build_attest.outputs.tarball_integrity }}
+      checksums: ${{ needs.build_attest.outputs.checksums }}
+      checksums_sha256: ${{ needs.build_attest.outputs.checksums_sha256 }}
+      sbom: ${{ needs.build_attest.outputs.sbom }}
+      sbom_sha256: ${{ needs.build_attest.outputs.sbom_sha256 }}
+      descriptor_sha256: ${{ needs.build_attest.outputs.descriptor_sha256 }}
+      provenance_bundle_sha256: ${{ needs.build_attest.outputs.provenance_bundle_sha256 }}
+      sbom_bundle_sha256: ${{ needs.build_attest.outputs.sbom_bundle_sha256 }}
+    steps:
+      - name: Reject release workflow reruns
+        run: test "${{ github.run_attempt }}" = 1
+      - name: Download the attested payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build_attest.outputs.artifact_id }}
+          path: ${{ github.workspace }}/release-payload
+          merge-multiple: true
+      - name: Create and verify draft prerelease
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAYLOAD_DIR: ${{ github.workspace }}/release-payload
+          TAG: ${{ needs.build_attest.outputs.tag }}
+          TARBALL: ${{ needs.build_attest.outputs.tarball }}
+          CHECKSUMS: ${{ needs.build_attest.outputs.checksums }}
+          SBOM: ${{ needs.build_attest.outputs.sbom }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --title "$TAG" --notes "Automated release candidate."
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+            "$PAYLOAD_DIR/$TARBALL" "$PAYLOAD_DIR/$CHECKSUMS" "$PAYLOAD_DIR/$SBOM" \
+            "$PAYLOAD_DIR/release.json" "$PAYLOAD_DIR/provenance.bundle.json" "$PAYLOAD_DIR/sbom.bundle.json"
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs'
+          const response = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/releases/tags/${process.env.TAG}`, {
+            headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${process.env.GH_TOKEN}`, 'x-github-api-version': '2022-11-28' },
+          })
+          if (!response.ok) throw new Error(`draft lookup returned ${response.status}`)
+          const release = await response.json()
+          if (!release.draft || !release.prerelease || release.tag_name !== process.env.TAG) throw new Error('draft identity/state mismatch')
+          const expected = new Set([process.env.TARBALL, process.env.CHECKSUMS, process.env.SBOM, 'release.json', 'provenance.bundle.json', 'sbom.bundle.json'])
+          if (!Array.isArray(release.assets) || release.assets.length !== expected.size) throw new Error('draft asset count mismatch')
+          for (const asset of release.assets) {
+            if (!expected.delete(asset.name)) throw new Error(`unexpected draft asset ${asset.name}`)
+          }
+          if (expected.size !== 0) throw new Error('draft asset set incomplete')
+          appendFileSync(process.env.GITHUB_OUTPUT, `release_id=${release.id}\n`)
+          NODE
+
+  publish_npm:
+    needs: stage_draft
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: write
+      id-token: write
+      actions: read
+    outputs:
+      release_id: ${{ needs.stage_draft.outputs.release_id }}
+      package_name: ${{ needs.stage_draft.outputs.package_name }}
+      version: ${{ needs.stage_draft.outputs.version }}
+      tag: ${{ needs.stage_draft.outputs.tag }}
+      tarball: ${{ needs.stage_draft.outputs.tarball }}
+      tarball_sha256: ${{ needs.stage_draft.outputs.tarball_sha256 }}
+      tarball_integrity: ${{ needs.stage_draft.outputs.tarball_integrity }}
+      checksums: ${{ needs.stage_draft.outputs.checksums }}
+      sbom: ${{ needs.stage_draft.outputs.sbom }}
+      descriptor_sha256: ${{ needs.stage_draft.outputs.descriptor_sha256 }}
+      provenance_bundle_sha256: ${{ needs.stage_draft.outputs.provenance_bundle_sha256 }}
+      sbom_bundle_sha256: ${{ needs.stage_draft.outputs.sbom_bundle_sha256 }}
+    steps:
+      - name: Reject release workflow reruns
+        run: test "${{ github.run_attempt }}" = 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: release-source
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.stage_draft.outputs.artifact_id }}
+          path: ${{ github.workspace }}/release-payload
+          merge-multiple: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.1
+      - name: Pin npm
+        run: npm install --global npm@11.16.0
+      - name: Verify payload, draft and registry preconditions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAYLOAD_DIR: ${{ github.workspace }}/release-payload
+          RELEASE_ID: ${{ needs.stage_draft.outputs.release_id }}
+          PACKAGE_NAME: ${{ needs.stage_draft.outputs.package_name }}
+          VERSION: ${{ needs.stage_draft.outputs.version }}
+          TARBALL: ${{ needs.stage_draft.outputs.tarball }}
+          TARBALL_SHA256: ${{ needs.stage_draft.outputs.tarball_sha256 }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto'
+          import { readFileSync } from 'node:fs'
+          import { join } from 'node:path'
+          import { pathToFileURL } from 'node:url'
+          const hash = name => createHash('sha256').update(readFileSync(join(process.env.PAYLOAD_DIR, name))).digest('hex')
+          if (hash(process.env.TARBALL) !== process.env.TARBALL_SHA256) throw new Error('payload tarball digest mismatch')
+          const releaseResponse = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/releases/${process.env.RELEASE_ID}`, {
+            headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${process.env.GH_TOKEN}`, 'x-github-api-version': '2022-11-28' },
+          })
+          if (!releaseResponse.ok) throw new Error(`draft lookup returned ${releaseResponse.status}`)
+          const release = await releaseResponse.json()
+          if (!release.draft || !release.prerelease || release.tag_name !== process.env.GITHUB_REF_NAME) throw new Error('draft changed before npm publish')
+          const packageResponse = await fetch(`https://registry.npmjs.org/${encodeURIComponent(process.env.PACKAGE_NAME)}`, { cache: 'no-store', headers: { accept: 'application/json' } })
+          if (!packageResponse.ok) throw new Error(`npm package preflight returned ${packageResponse.status}`)
+          const metadata = await packageResponse.json()
+          if (metadata.versions?.[process.env.VERSION] !== undefined) throw new Error('candidate version already exists')
+          const { assertNpmLatestAdvances } = await import(pathToFileURL(
+            join(process.env.GITHUB_WORKSPACE, 'release-source/scripts/release-preview-lib.mjs'),
+          ).href)
+          assertNpmLatestAdvances(process.env.PACKAGE_NAME, process.env.VERSION, metadata['dist-tags']?.latest)
+          NODE
+      - name: Publish the RC with Trusted Publishing
+        env:
+          TGZ: ${{ github.workspace }}/release-payload/${{ needs.stage_draft.outputs.tarball }}
+        run: env -u NODE_AUTH_TOKEN -u NPM_TOKEN npm publish "$TGZ" --tag latest --access public --provenance
+      - name: Verify registry tarball and provenance
+        env:
+          PACKAGE_NAME: ${{ needs.stage_draft.outputs.package_name }}
+          VERSION: ${{ needs.stage_draft.outputs.version }}
+          TARBALL_SHA256: ${{ needs.stage_draft.outputs.tarball_sha256 }}
+          TARBALL_INTEGRITY: ${{ needs.stage_draft.outputs.tarball_integrity }}
+          TARBALL: ${{ github.workspace }}/release-payload/${{ needs.stage_draft.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto'
+          import { join } from 'node:path'
+          import { pathToFileURL } from 'node:url'
+          const { fetchNpmJsonWithRetry } = await import(pathToFileURL(
+            join(process.env.GITHUB_WORKSPACE, 'release-source/scripts/release-preview-lib.mjs'),
+          ).href)
+          const encoded = encodeURIComponent(process.env.PACKAGE_NAME)
+          const version = await fetchNpmJsonWithRetry({
+            url: `https://registry.npmjs.org/${encoded}/${encodeURIComponent(process.env.VERSION)}`,
+            label: 'npm version verification',
+            isReady: metadata => metadata.dist?.attestations?.provenance?.predicateType === 'https://slsa.dev/provenance/v1',
+          })
+          if (version.dist.integrity !== process.env.TARBALL_INTEGRITY) throw new Error('npm integrity mismatch')
+          const response = await fetch(version.dist.tarball)
+          if (!response.ok) throw new Error(`npm tarball download returned ${response.status}`)
+          const digest = createHash('sha256').update(Buffer.from(await response.arrayBuffer())).digest('hex')
+          if (digest !== process.env.TARBALL_SHA256) throw new Error('npm tarball SHA-256 mismatch')
+          const packument = await fetchNpmJsonWithRetry({
+            url: `https://registry.npmjs.org/${encoded}`,
+            label: 'npm packument verification',
+            isReady: metadata => metadata['dist-tags']?.latest === process.env.VERSION,
+          })
+          if (packument['dist-tags']?.latest !== process.env.VERSION) throw new Error('npm latest tag mismatch')
+          NODE
+          work="$RUNNER_TEMP/npm-signatures"
+          mkdir "$work"
+          printf '{"private":true,"dependencies":{"%s":"%s"}}\n' "$PACKAGE_NAME" "$VERSION" > "$work/package.json"
+          cd "$work"
+          env -u NODE_AUTH_TOKEN -u NPM_TOKEN npm install --ignore-scripts --no-audit --no-fund --save-exact
+          npm audit signatures --json --include-attestations > npm-signatures.json
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs'
+          const report = JSON.parse(readFileSync('npm-signatures.json', 'utf8'))
+          const record = report.verified?.find(item => item.name === process.env.PACKAGE_NAME && item.version === process.env.VERSION)
+          if (record === undefined || record.attestations?.provenance?.predicateType !== 'https://slsa.dev/provenance/v1') throw new Error('npm provenance verification missing')
+          NODE
+
+  finalize_release:
+    needs: publish_npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Reject release workflow reruns
+        run: test "${{ github.run_attempt }}" = 1
+      - name: Publish the verified GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.publish_npm.outputs.release_id }}
+          TAG: ${{ needs.publish_npm.outputs.tag }}
+          TARBALL: ${{ needs.publish_npm.outputs.tarball }}
+          CHECKSUMS: ${{ needs.publish_npm.outputs.checksums }}
+          SBOM: ${{ needs.publish_npm.outputs.sbom }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          const url = `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/releases/${process.env.RELEASE_ID}`
+          const headers = { accept: 'application/vnd.github+json', authorization: `Bearer ${process.env.GH_TOKEN}`, 'x-github-api-version': '2022-11-28' }
+          const response = await fetch(url, { headers })
+          if (!response.ok) throw new Error(`release lookup returned ${response.status}`)
+          const release = await response.json()
+          if (!release.draft || !release.prerelease || release.tag_name !== process.env.TAG) throw new Error('release state mismatch')
+          const expected = new Set([process.env.TARBALL, process.env.CHECKSUMS, process.env.SBOM, 'release.json', 'provenance.bundle.json', 'sbom.bundle.json'])
+          if (!Array.isArray(release.assets) || release.assets.length !== expected.size) throw new Error('release asset count mismatch')
+          for (const asset of release.assets) if (!expected.delete(asset.name)) throw new Error(`release asset mismatch: ${asset.name}`)
+          if (expected.size !== 0) throw new Error('release asset set incomplete')
+          const published = await fetch(url, { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ draft: false, prerelease: true, make_latest: 'false' }) })
+          if (!published.ok) throw new Error(`release publish returned ${published.status}`)
+          const final = await published.json()
+          if (final.draft || !final.prerelease || final.tag_name !== process.env.TAG) throw new Error('published release verification failed')
+          NODE

@@ -29,6 +29,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "pnpm run test && pnpm run build",
+    "release:preview": "node scripts/release-preview.mjs",
+    "release:formal": "node scripts/release-preview.mjs --formal",
     "prepublishOnly": "pnpm run check",
     "prepare": "pnpm run build"
   },
@@ -38,7 +40,7 @@
   "packageManager": "pnpm@11.7.0",
   "publishConfig": {
     "access": "public",
-    "tag": "next"
+    "tag": "latest"
   },
   "keywords": [
     "deepseek-harness",
