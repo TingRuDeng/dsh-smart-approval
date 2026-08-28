@@ -1,4 +1,4 @@
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
@@ -42,7 +42,7 @@ function requestOf(options: {
   return {
     agent,
     toolName: 'bash',
-    callId: CallId('call-1'),
+    callId: ToolCallId('call-1'),
     ...options.signal === undefined ? {} : { signal: options.signal },
   }
 }

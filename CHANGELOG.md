@@ -4,6 +4,15 @@ All notable user-facing changes to `dsh-smart-approval` are documented here.
 This project is in developer preview, so release candidates may still change
 before `0.1.0`.
 
+## [0.1.0-rc.10] - 2026-08-28
+
+- Align the host and browser contracts with DeepSeek Harness `0.1.2-alpha.1`.
+- Replace the removed client runtime type surface with the Cordis context,
+  session, renderer, and UI-session contracts used by the current Client
+  assembly.
+- Build and test against the adjacent Harness checkout so unpublished alpha
+  packages cannot be mistaken for registry-resolvable dependencies.
+
 ## [0.1.0-rc.9] - 2026-08-23
 
 - Reissue the formal release candidate with npm Trusted Publishing enabled for

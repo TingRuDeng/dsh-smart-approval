@@ -38,14 +38,14 @@ Web 输入框底部应显示两个控件：
 ### 环境要求
 
 - Node.js 24 或更高版本。
-- DeepSeek Harness `>=0.1.1-rc.1 <0.2.0`（当前验证基线：`0.1.1-rc.2`）。
+- DeepSeek Harness `>=0.1.2-alpha.1 <0.2.0`（当前源码验证基线：`0.1.2-alpha.1`，commit `cd5ef8148158c3a752a658978873241fdf8e2bbc`）。
 - `PATH` 中存在 `pnpm`；DSH 会把插件管理操作转发给 pnpm。
 
 全局安装 DSH 后：
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.1-rc.2
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.8
+npm install --global @deepseek-ai/dsh@0.1.2-alpha.1
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.10
 dsh --profile web --dump-config
 dsh web
 ```
@@ -53,10 +53,13 @@ dsh web
 一次性运行：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.1-rc.2 plugin --profile web add dsh-smart-approval@0.1.0-rc.8
-npx @deepseek-ai/dsh@0.1.1-rc.2 --profile web --dump-config
-npx @deepseek-ai/dsh@0.1.1-rc.2 web
+npx @deepseek-ai/dsh@0.1.2-alpha.1 plugin --profile web add dsh-smart-approval@0.1.0-rc.10
+npx @deepseek-ai/dsh@0.1.2-alpha.1 --profile web --dump-config
+npx @deepseek-ai/dsh@0.1.2-alpha.1 web
 ```
+
+这里的 `0.1.2-alpha.1` Harness 包是本候选版本的源码验证基线。如果该 alpha 尚未发布到 npm，
+请按下方方式从匹配的 Harness checkout 使用 `pnpm dsh` 运行 CLI。
 
 `npm dsh ...` 不是合法的 npm 命令。全局安装后使用 `dsh ...`，一次性运行使用
 `npx @deepseek-ai/dsh ...`，从 DeepSeek Harness 源码 checkout 运行时使用 `pnpm dsh ...`。
@@ -232,7 +235,14 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 
 ## 开发
 
+请把匹配的 `deepseek-harness` checkout 放在本仓库相邻目录，并先构建 Harness libraries；
+alpha 包尚未发布期间，本仓库的开发依赖会有意通过 `../deepseek-harness` 解析。
+
 ```sh
+cd ../deepseek-harness
+pnpm install --frozen-lockfile
+pnpm build:lib
+cd ../dsh-smart-approval
 pnpm install
 pnpm test
 pnpm run typecheck
@@ -240,7 +250,7 @@ pnpm run build
 pnpm pack --dry-run
 ```
 
-支持的 DSH 范围是 `>=0.1.1-rc.1 <0.2.0`，当前验证基线是 `0.1.1-rc.2`。真实 provider 的端到端审核和人工回退交互仍依赖部署凭据
+支持的 DSH 范围是 `>=0.1.2-alpha.1 <0.2.0`，当前源码验证基线是 `0.1.2-alpha.1`（commit `cd5ef8148158c3a752a658978873241fdf8e2bbc`）。真实 provider 的端到端审核和人工回退交互仍依赖部署凭据
 与具体环境验收。
 
 ## License

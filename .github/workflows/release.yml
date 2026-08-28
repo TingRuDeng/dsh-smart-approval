@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+          ref: cd5ef8148158c3a752a658978873241fdf8e2bbc
           path: deepseek-harness
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -43,11 +43,11 @@ jobs:
           corepack enable
           corepack prepare pnpm@11.18.0 --activate
           npm install --global npm@11.16.0
-      - name: Build Harness host libraries
+      - name: Build Harness libraries
         working-directory: deepseek-harness
         run: |
           pnpm install --frozen-lockfile
-          pnpm build:lib:host
+          pnpm build:lib
       - name: Build the sole formal tarball
         working-directory: dsh-smart-approval
         env:

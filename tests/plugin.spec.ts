@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import { describe, expect, it, vi } from 'vitest'
@@ -10,7 +10,7 @@ import { applyReviewModeEvent, initialReviewModeState } from '../src/review-mode
 const { Config, apply, inject, name } = plugin
 
 function smartModeRequest(): ApprovalRequest {
-  const callId = CallId('call-smart-mode')
+  const callId = ToolCallId('call-smart-mode')
   const message: UserMessage = createUserMessage({
     source: { kind: 'user' },
     content: [{ type: 'text', text: '在当前项目运行测试' }],
@@ -42,7 +42,7 @@ function smartModeRequest(): ApprovalRequest {
 }
 
 function smartWriteRequest(): ApprovalRequest {
-  const callId = CallId('call-smart-write')
+  const callId = ToolCallId('call-smart-write')
   const message: UserMessage = createUserMessage({
     source: { kind: 'user' },
     content: [{ type: 'text', text: '在 /work/other 创建 report.md' }],

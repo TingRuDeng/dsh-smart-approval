@@ -1,4 +1,4 @@
-import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -8,7 +8,7 @@ import { createSmartApprovalHandler } from '../src/approval-handler.ts'
 import { buildReviewPayload } from '../src/review-context.ts'
 import type { ReviewMode } from '../src/review-mode.ts'
 
-const callId = CallId('call-1')
+const callId = ToolCallId('call-1')
 
 function toolCall(argumentsJson: string, name = 'bash', turn = 1, seq = 3): SessionEvent {
   return {
