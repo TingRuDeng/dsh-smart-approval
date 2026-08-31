@@ -6,6 +6,21 @@ export const RELEASE_WORKFLOW = '.github/workflows/release.yml'
 export const sha256 = value => createHash('sha256').update(value).digest('hex')
 export const sha512Integrity = value => `sha512-${createHash('sha512').update(value).digest('base64')}`
 
+export function createRuntimeSbomManifest(manifest) {
+  const result = {
+    private: true,
+    name: manifest.name,
+    version: manifest.version,
+  }
+  if (Object.keys(manifest.dependencies ?? {}).length > 0) {
+    result.dependencies = { ...manifest.dependencies }
+  }
+  if (Object.keys(manifest.optionalDependencies ?? {}).length > 0) {
+    result.optionalDependencies = { ...manifest.optionalDependencies }
+  }
+  return result
+}
+
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
 const rcVersion = value => {

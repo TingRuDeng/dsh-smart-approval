@@ -1,6 +1,7 @@
 node_modules/
 .pnpm-store/
 lib/
+artifacts/
 coverage/
 *.tgz
 .DS_Store

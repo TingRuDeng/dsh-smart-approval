@@ -4,9 +4,13 @@ All notable user-facing changes to `dsh-smart-approval` are documented here.
 This project is in developer preview, so release candidates may still change
 before `0.1.0`.
 
-## [0.1.0-rc.10] - 2026-08-28
+## [0.1.0-rc.10] - 2026-08-31
 
-- Align the host and browser contracts with DeepSeek Harness `0.1.2-alpha.1`.
+- Align and verify the host and browser contracts against DeepSeek Harness
+  `0.1.2-alpha.2` at official commit
+  `0a53fb55bea101816fa226bb964ae2bed71c343b`.
+- Require Cordis `^4.0.2` so the plugin and Harness share the same nominal
+  context and event types.
 - Replace the removed client runtime type surface with the Cordis context,
   session, renderer, and UI-session contracts used by the current Client
   assembly.

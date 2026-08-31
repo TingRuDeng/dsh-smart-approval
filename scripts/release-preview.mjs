@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process'
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { builtinModules } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -12,6 +12,7 @@ import {
   assertFormalReleaseContext,
   assertNpmLatestAdvances,
   assertTarballEntries,
+  createRuntimeSbomManifest,
   fetchNpmJsonWithRetry,
   RELEASE_REPOSITORY,
   RELEASE_WORKFLOW,
@@ -82,7 +83,12 @@ async function assertRuntimeClosure(libRoot, manifest) {
 async function generateSbom(packageRoot, output) {
   const sbomRoot = await mkdtemp(join(tmpdir(), 'dsh-smart-sbom-'))
   try {
-    await cp(join(packageRoot, 'package.json'), join(sbomRoot, 'package.json'))
+    const packedManifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
+    await writeFile(
+      join(sbomRoot, 'package.json'),
+      `${JSON.stringify(createRuntimeSbomManifest(packedManifest), null, 2)}\n`,
+      'utf8',
+    )
     run('npm', [
       'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund',
       '--omit=dev', '--omit=peer',

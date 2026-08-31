@@ -43,13 +43,13 @@ switches a session to Full access.
 ### Requirements
 
 - Node.js 24 or later.
-- DeepSeek Harness `>=0.1.2-alpha.1 <0.2.0` (current source verification baseline: `0.1.2-alpha.1`, commit `cd5ef8148158c3a752a658978873241fdf8e2bbc`).
+- DeepSeek Harness `>=0.1.2-alpha.1 <0.2.0` (current source verification baseline: `0.1.2-alpha.2`, commit `0a53fb55bea101816fa226bb964ae2bed71c343b`).
 - `pnpm` on `PATH`; DSH forwards plugin-management operations to pnpm.
 
 After installing the DSH CLI globally:
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.2-alpha.1
+npm install --global @deepseek-ai/dsh@0.1.2-alpha.2
 dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.10
 dsh --profile web --dump-config
 dsh web
@@ -58,14 +58,14 @@ dsh web
 For one-off execution:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.2-alpha.1 plugin --profile web add dsh-smart-approval@0.1.0-rc.10
-npx @deepseek-ai/dsh@0.1.2-alpha.1 --profile web --dump-config
-npx @deepseek-ai/dsh@0.1.2-alpha.1 web
+npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add dsh-smart-approval@0.1.0-rc.10
+npx @deepseek-ai/dsh@0.1.2-alpha.2 --profile web --dump-config
+npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 ```
 
-The `0.1.2-alpha.1` Harness package is the source verification baseline for
-this candidate. If that alpha is not yet available from npm, run the CLI from
-the matching Harness checkout with `pnpm dsh` as shown below.
+The published `0.1.2-alpha.2` Harness package is the source verification
+baseline for this candidate. To test the matching source checkout, use
+`pnpm dsh` as shown below.
 
 `npm dsh ...` is not a valid npm command. Use `dsh ...` after a global install,
 `npx @deepseek-ai/dsh ...` for one-off execution, or `pnpm dsh ...` from a
@@ -311,7 +311,7 @@ pnpm pack --dry-run
 ```
 
 The supported DSH range is `>=0.1.2-alpha.1 <0.2.0`; the current source verification
-baseline is `0.1.2-alpha.1` at commit `cd5ef8148158c3a752a658978873241fdf8e2bbc`. Real-provider end-to-end
+baseline is `0.1.2-alpha.2` at commit `0a53fb55bea101816fa226bb964ae2bed71c343b`. Real-provider end-to-end
 review and human-fallback interaction still require deployment credentials and
 environment-specific acceptance testing.
 
