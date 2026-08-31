@@ -4,6 +4,14 @@ All notable user-facing changes to `dsh-smart-approval` are documented here.
 This project is in developer preview, so release candidates may still change
 before `0.1.0`.
 
+## [0.1.0-rc.11] - 2026-08-31
+
+- Reissue the DeepSeek Harness `0.1.2-alpha.2` compatibility candidate after
+  npm accepted `0.1.0-rc.10` but its release verification observed a transient
+  registry tarball `404` during propagation.
+- Retry transient npm tarball `404` responses before checking the published
+  bytes against the attested release digest.
+
 ## [0.1.0-rc.10] - 2026-08-31
 
 - Align and verify the host and browser contracts against DeepSeek Harness

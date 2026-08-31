@@ -26,3 +26,27 @@ describe('release preview SBOM manifest', () => {
     })
   })
 })
+
+describe('release preview npm tarball verification', () => {
+  it('retries a transient registry 404 before returning the tarball bytes', async () => {
+    const fetchNpmTarballWithRetry = (
+      releasePreview as typeof releasePreview & {
+        fetchNpmTarballWithRetry?: (options: Record<string, unknown>) => Promise<Buffer>
+      }
+    ).fetchNpmTarballWithRetry
+    const responses = [
+      new Response('not found', { status: 404 }),
+      new Response(Buffer.from('verified tarball')),
+    ]
+    let waits = 0
+
+    expect(fetchNpmTarballWithRetry).toBeTypeOf('function')
+    await expect(fetchNpmTarballWithRetry?.({
+      url: 'https://registry.npmjs.org/dsh-smart-approval/-/dsh-smart-approval-0.1.0-rc.10.tgz',
+      label: 'npm tarball verification',
+      fetchImpl: async () => responses.shift(),
+      wait: async () => { waits += 1 },
+    })).resolves.toEqual(Buffer.from('verified tarball'))
+    expect(waits).toBe(1)
+  })
+})

@@ -411,7 +411,7 @@ jobs:
           import { createHash } from 'node:crypto'
           import { join } from 'node:path'
           import { pathToFileURL } from 'node:url'
-          const { fetchNpmJsonWithRetry } = await import(pathToFileURL(
+          const { fetchNpmJsonWithRetry, fetchNpmTarballWithRetry } = await import(pathToFileURL(
             join(process.env.GITHUB_WORKSPACE, 'release-source/scripts/release-preview-lib.mjs'),
           ).href)
           const encoded = encodeURIComponent(process.env.PACKAGE_NAME)
@@ -421,9 +421,11 @@ jobs:
             isReady: metadata => metadata.dist?.attestations?.provenance?.predicateType === 'https://slsa.dev/provenance/v1',
           })
           if (version.dist.integrity !== process.env.TARBALL_INTEGRITY) throw new Error('npm integrity mismatch')
-          const response = await fetch(version.dist.tarball)
-          if (!response.ok) throw new Error(`npm tarball download returned ${response.status}`)
-          const digest = createHash('sha256').update(Buffer.from(await response.arrayBuffer())).digest('hex')
+          const tarball = await fetchNpmTarballWithRetry({
+            url: version.dist.tarball,
+            label: 'npm tarball download',
+          })
+          const digest = createHash('sha256').update(tarball).digest('hex')
           if (digest !== process.env.TARBALL_SHA256) throw new Error('npm tarball SHA-256 mismatch')
           const packument = await fetchNpmJsonWithRetry({
             url: `https://registry.npmjs.org/${encoded}`,

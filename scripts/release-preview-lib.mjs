@@ -71,6 +71,41 @@ export async function fetchNpmJsonWithRetry({
   throw new Error(`${label} did not become ready after ${attempts} attempts (last status ${lastStatus})`)
 }
 
+export async function fetchNpmTarballWithRetry({
+  url,
+  label,
+  fetchImpl = globalThis.fetch,
+  wait = () => sleep(3000),
+  attempts = 8,
+}) {
+  if (
+    typeof url !== 'string'
+    || url === ''
+    || typeof label !== 'string'
+    || label === ''
+    || typeof fetchImpl !== 'function'
+    || typeof wait !== 'function'
+    || !Number.isSafeInteger(attempts)
+    || attempts <= 0
+  ) {
+    throw new Error('npm tarball retry options are invalid')
+  }
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const response = await fetchImpl(url, {
+      cache: 'no-store',
+      headers: { accept: 'application/octet-stream', 'cache-control': 'no-cache' },
+    })
+    if (response?.ok === true) return Buffer.from(await response.arrayBuffer())
+    if (response?.status !== 404 || attempt === attempts) {
+      throw new Error(`${label} returned HTTP ${String(response?.status)}`)
+    }
+    await wait()
+  }
+
+  throw new Error(`${label} retry loop terminated unexpectedly`)
+}
+
 export function assertFormalReleaseContext({
   manifest,
   gitHead,

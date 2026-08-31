@@ -50,7 +50,7 @@ After installing the DSH CLI globally:
 
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.2-alpha.2
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.10
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.11
 dsh --profile web --dump-config
 dsh web
 ```
@@ -58,7 +58,7 @@ dsh web
 For one-off execution:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add dsh-smart-approval@0.1.0-rc.10
+npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add dsh-smart-approval@0.1.0-rc.11
 npx @deepseek-ai/dsh@0.1.2-alpha.2 --profile web --dump-config
 npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 ```
