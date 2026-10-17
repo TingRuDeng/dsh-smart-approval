@@ -11,14 +11,40 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # The plugin's dev/peer dependencies are `link:` paths into a sibling
+      # Harness checkout, so this job only means anything when that checkout
+      # exists. Without it `tsc` cannot resolve any `@deepseek-ai/dsh-*` package
+      # and the job fails for a reason unrelated to the change under review.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: dsh-smart-approval
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: deepseek-ai/deepseek-harness
+          # Pinned to the exact baseline the plugin declares in its peers.
+          # Keep identical to `.github/workflows/release.yml`.
+          ref: d743267388641bc76f17c45ce8b4c231aed1d32c
+          path: deepseek-harness
+      # Same toolchain as the release workflow, so a green check here cannot
+      # disagree with a red release for a tooling reason.
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
-          version: 11.7.0
+          version: 11.18.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 24.18.1
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run check
-      - run: pnpm pack --dry-run
+          cache-dependency-path: |
+            dsh-smart-approval/pnpm-lock.yaml
+            deepseek-harness/pnpm-lock.yaml
+      - name: Build Harness libraries
+        working-directory: deepseek-harness
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build:lib
+      - name: Check the plugin against the declared baseline
+        working-directory: dsh-smart-approval
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run check
+          pnpm pack --dry-run
