@@ -14,6 +14,13 @@ import {
 } from './review-policy.ts'
 import type { ReviewPayload } from './review-context.ts'
 
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /** Reviewer prompt synthesized by this plugin, never admitted from the user. */
+    'smart-approval-review': { readonly kind: 'smart-approval-review' }
+  }
+}
+
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_MAX_TOKENS = 128
 const MAX_TIMER_DELAY_MS = 2_147_483_647
@@ -138,7 +145,7 @@ export function createLlmReviewer(llm: LlmStreamClient, config: LlmReviewerConfi
         model: route.model,
         system: REVIEW_SYSTEM_PROMPT,
         messages: [createUserMessage({
-          source: { kind: 'plugin', plugin: 'dsh-smart-approval' },
+          source: { kind: 'smart-approval-review' },
           content: [{ type: 'text', text: JSON.stringify(payload) }],
         })],
         tools: [],

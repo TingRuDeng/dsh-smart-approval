@@ -6,7 +6,7 @@ import type {} from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-user-approval'
-import type { Session } from '@deepseek-ai/dsh-session'
+import { SessionLogOffset, type Session } from '@deepseek-ai/dsh-session'
 import { createSmartApprovalHandler } from './approval-handler.ts'
 import {
   createFileTargetInspector,
@@ -15,7 +15,7 @@ import {
 } from './file-target-inspector.ts'
 import { createLlmReviewer, resolveLlmReviewerConfig } from './llm-reviewer.ts'
 import {
-  applyReviewModeEvent, DEFAULT_REVIEW_MODE, foldReviewModeEvents, initialReviewModeState,
+  applyReviewModeEvent, DEFAULT_REVIEW_MODE, initialReviewModeState,
   REVIEW_MODES, reviewModeProjectionSchema, reviewModeProjectionStateSchema,
   viewReviewModeProjection,
 } from './review-mode.ts'
@@ -23,12 +23,14 @@ import type { ReviewMode, ReviewModeProjectionState } from './review-mode.ts'
 import {
   DecisionLogStore, reviewModeDomainSpec, ReviewModeStore, type DecisionEntry,
 } from './review-mode-storage.ts'
+import { SessionContextTracker } from './session-context.ts'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_MAX_TOKENS = 128
 const DEFAULT_MAX_TOOL_ARGUMENT_CHARS = 12_000
 const DEFAULT_MAX_USER_MESSAGES = 4
 const DEFAULT_MAX_USER_CONTEXT_CHARS = 8_000
+const DEFAULT_MAX_TRACKED_TOOL_CALLS = 32
 const DEFAULT_DECISION_LOG_SIZE = 50
 const DEFAULT_APPROVAL_LOG_COUNT = 10
 const MAX_TIMER_DELAY_MS = 2_147_483_647
@@ -37,7 +39,7 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647
 export const name = 'dsh-smart-approval'
 
 /** Services that must exist before the answerer registers. */
-export const inject = ['approval', 'llm', 'sessions', 'storageDomain', 'fs']
+export const inject = ['approval', 'llm', 'storageDomain', 'fs']
 
 /** Runtime configuration for smart approval. */
 export interface Config {
@@ -57,6 +59,8 @@ export interface Config {
   readonly maxUserMessages?: number
   /** Maximum combined character count of included direct-user messages. */
   readonly maxUserContextChars?: number
+  /** Maximum tool calls tracked per turn as reviewer context; the newest are kept. */
+  readonly maxTrackedToolCalls?: number
   /** Maximum persisted decision-audit entries per Session lifecycle; 0 disables the audit. */
   readonly decisionLogSize?: number
 }
@@ -71,6 +75,7 @@ export const Config: z<Config> = z.object({
   maxToolArgumentChars: z.number().step(1).min(1).default(DEFAULT_MAX_TOOL_ARGUMENT_CHARS),
   maxUserMessages: z.number().step(1).min(1).default(DEFAULT_MAX_USER_MESSAGES),
   maxUserContextChars: z.number().step(1).min(1).default(DEFAULT_MAX_USER_CONTEXT_CHARS),
+  maxTrackedToolCalls: z.number().step(1).min(1).default(DEFAULT_MAX_TRACKED_TOOL_CALLS),
   decisionLogSize: z.number().step(1).min(0).default(DEFAULT_DECISION_LOG_SIZE),
 })
 
@@ -105,25 +110,35 @@ async function mount(
   const modeStore = new ReviewModeStore(domain.table('sessions'))
   const decisionLogSize = config.decisionLogSize ?? DEFAULT_DECISION_LOG_SIZE
   const decisionStore = new DecisionLogStore(domain.table('decisions'), decisionLogSize)
-  const fallbackModes = new WeakMap<Session, ReviewMode>()
-  const migrate = async (session: Session): Promise<void> => {
-    const state = foldReviewModeEvents(session.events, defaultMode)
-    fallbackModes.set(session, state.mode)
-    if (state.origin === 'default' || modeStore.get(session) !== undefined) return
-    await modeStore.set(session, state.mode)
-  }
-  const currentMode = (session: Session): ReviewMode =>
-    modeStore.get(session) ?? fallbackModes.get(session) ?? defaultMode
-  for (const session of ctx.sessions.list()) {
-    await migrate(session)
-  }
-  ctx.on('session/created', async (session) => {
-    try {
-      await migrate(session)
-    } catch (error) {
-      ctx.logger.warn('smart-approval: failed to persist initial review mode: ' + String(error))
-    }
+  const maxToolArgumentChars = config.maxToolArgumentChars ?? DEFAULT_MAX_TOOL_ARGUMENT_CHARS
+  const maxUserMessages = config.maxUserMessages ?? DEFAULT_MAX_USER_MESSAGES
+  const tracker = new SessionContextTracker({
+    maxUserMessages,
+    maxToolArgumentChars,
+    maxTrackedToolCalls: config.maxTrackedToolCalls ?? DEFAULT_MAX_TRACKED_TOOL_CALLS,
   })
+  // Fold committed events instead of rescanning the log per request. Delivery is
+  // synchronous inside the append, so `tool/call` is already indexed when its
+  // approval request is dispatched.
+  ctx.on('session/event', (session, event) => {
+    tracker.observe(session, event)
+  })
+  // `Session` documents that seed events never publish on `session/event`, so a
+  // resumed or forked session installs its history before this observer attaches
+  // and announces it only through this hook. Fold that inherited prefix exactly
+  // once at announcement; `firstLiveSeq` is the constructor seed length, which is
+  // the prefix boundary. Without this, every approval in a resumed session would
+  // degrade to a human handoff.
+  ctx.on('session/created', (session) => {
+    // A fresh session has no seed: the push stream already carries all of it.
+    if (session.firstLiveSeq === 0) return
+    // oxlint-disable-next-line typescript/no-deprecated -- One bounded seed read at announcement; the push stream carries everything after it.
+    tracker.backfill(session, session.snapshotEvents(SessionLogOffset(0), session.firstLiveSeq))
+  })
+  ctx.on('session/disposed', (session) => {
+    tracker.release(session)
+  })
+  const currentMode = (session: Session): ReviewMode => modeStore.get(session) ?? defaultMode
   ctx.inject(['sessionProjections'], (scope) => {
     scope.sessionProjections.register<'approvalReview', ReviewModeProjectionState>({
       key: 'approvalReview',
@@ -134,7 +149,7 @@ async function mount(
         viewSchema: reviewModeProjectionSchema,
         view: viewReviewModeProjection,
       },
-      stateVersion: 3,
+      stateVersion: 4,
     })
   })
   ctx.inject(['commands'], (scope) => {
@@ -176,9 +191,10 @@ async function mount(
   })
   const handler = createSmartApprovalHandler({
     currentMode,
+    contextFor: (session, callId) => tracker.snapshot(session, callId),
     limits: {
-      maxToolArgumentChars: config.maxToolArgumentChars ?? DEFAULT_MAX_TOOL_ARGUMENT_CHARS,
-      maxUserMessages: config.maxUserMessages ?? DEFAULT_MAX_USER_MESSAGES,
+      maxToolArgumentChars,
+      maxUserMessages,
       maxUserContextChars: config.maxUserContextChars ?? DEFAULT_MAX_USER_CONTEXT_CHARS,
     },
     inspectFileTarget: createFileTargetInspector(
