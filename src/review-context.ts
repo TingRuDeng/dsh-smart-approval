@@ -1,7 +1,8 @@
 /** Trusted-context extraction for one DSH approval request. */
 
-import type { Message } from '@deepseek-ai/dsh-llm'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
+import type { ApprovalContext } from './session-context.ts'
 
 /** Input limits that prevent partial authorization context from reaching a reviewer. */
 export interface ReviewContextLimits {
@@ -118,48 +119,44 @@ export type ReviewPayloadResult =
  * Resolve one request to its durable tool arguments and bounded recent direct-user messages.
  * The request's free-form `reason` is intentionally excluded: the model that
  * requested escalation authored it, so it cannot establish user consent.
+ * Every fact comes from the live context folded from committed events, so the
+ * decision never depends on rescanning Session event history.
  * @param request - DSH approval request being dispatched.
+ * @param sessionContext - context folded for this request's session and call.
  * @param limits - complete context limits.
  * @returns a review payload, or a mandatory human handoff.
  */
 export function buildReviewPayload(
   request: ApprovalRequest,
+  sessionContext: ApprovalContext,
   limits: ReviewContextLimits,
 ): ReviewPayloadResult {
   if (request.callId === undefined) return { kind: 'human', reasonCode: 'missing-tool-call' }
-  const matchingCalls = request.agent.session.events.filter(event =>
-    event.type === 'tool/call' && event.data.callId === request.callId,
-  )
-  if (matchingCalls.length !== 1) return { kind: 'human', reasonCode: 'missing-tool-call' }
-  const call = matchingCalls[0]
-  if (call === undefined || call.type !== 'tool/call') {
-    return { kind: 'human', reasonCode: 'missing-tool-call' }
-  }
-  if (call.data.name !== request.toolName) return { kind: 'human', reasonCode: 'tool-mismatch' }
-  if (call.data.arguments.length > limits.maxToolArgumentChars) {
+  if (sessionContext.calls.length !== 1) return { kind: 'human', reasonCode: 'missing-tool-call' }
+  const call = sessionContext.calls[0]
+  if (call === undefined) return { kind: 'human', reasonCode: 'missing-tool-call' }
+  if (call.name !== request.toolName) return { kind: 'human', reasonCode: 'tool-mismatch' }
+  // The tracker clamps stored arguments to `maxToolArgumentChars + 1`, so an
+  // argument that crossed the bound stays recognizable here without being kept.
+  if (call.arguments.length > limits.maxToolArgumentChars) {
     return { kind: 'human', reasonCode: 'tool-arguments-too-large' }
   }
 
   let parsedArguments: unknown
   try {
-    parsedArguments = JSON.parse(call.data.arguments)
+    parsedArguments = JSON.parse(call.arguments)
   } catch {
     return { kind: 'human', reasonCode: 'invalid-tool-arguments' }
   }
   if (!isRecord(parsedArguments)) {
     return { kind: 'human', reasonCode: 'invalid-tool-arguments' }
   }
-  const normalizedArguments = normalizeToolArguments(call.data.name, parsedArguments)
+  const normalizedArguments = normalizeToolArguments(call.name, parsedArguments)
   if (normalizedArguments.kind === 'human') return normalizedArguments
 
-  const callIndex = request.agent.session.events.indexOf(call)
-  const turnStartIndex = findTurnStart(request.agent.session.events, callIndex, call.data.turn)
-  if (turnStartIndex === undefined) return { kind: 'human', reasonCode: 'missing-user-context' }
-  const currentDirectUserMessages = request.agent.session.events
-    .slice(turnStartIndex + 1, callIndex)
-    .filter(event => event.type === 'user/message')
-    .map(event => event.data)
-    .filter(isDirectUserMessage)
+  const currentDirectUserMessages = sessionContext.currentUserMessages
+  // The tracker retains one message past this limit and no more, so the count
+  // stays exact up to the limit and any overflow is still visible here.
   if (currentDirectUserMessages.length > limits.maxUserMessages) {
     return { kind: 'human', reasonCode: 'too-many-user-messages' }
   }
@@ -177,11 +174,7 @@ export function buildReviewPayload(
 
   const userRequests = [...currentUserRequests]
   let historyOmitted = false
-  const previousDirectUserMessages = request.agent.session.events
-    .slice(0, turnStartIndex)
-    .filter(event => event.type === 'user/message')
-    .map(event => event.data)
-    .filter(isDirectUserMessage)
+  const previousDirectUserMessages = sessionContext.previousUserMessages
   for (let index = previousDirectUserMessages.length - 1; index >= 0; index -= 1) {
     const message = previousDirectUserMessages[index]
     if (message === undefined) continue
@@ -199,6 +192,9 @@ export function buildReviewPayload(
     userRequests.unshift(text)
     contextChars += text.length
   }
+  // A scan that ended by exhausting the ring never reached the start of the log:
+  // disclose the omission instead of presenting a shorter history as complete.
+  if (!historyOmitted && sessionContext.previousTruncated) historyOmitted = true
 
   const workspaceRoot = request.agent.session.header.cwd
   return {
@@ -385,27 +381,8 @@ function isSandboxPermission(value: unknown): value is SandboxPermission {
   return value === 'workspace-write' || value === 'danger-full-access'
 }
 
-/** Locate the current call's turn boundary without accepting messages from an earlier turn. */
-function findTurnStart(
-  events: ApprovalRequest['agent']['session']['events'],
-  callIndex: number,
-  turn: number,
-): number | undefined {
-  for (let index = callIndex - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event?.type !== 'turn/start') continue
-    return event.data.turn === turn ? index : undefined
-  }
-  return undefined
-}
-
-/** Whether a model-history row is direct human input rather than injected context or a tool result. */
-function isDirectUserMessage(message: Message): boolean {
-  return message.role === 'user' && message.source.kind === 'user'
-}
-
 /** Concatenate visible text blocks from one direct-user message. */
-function textOf(message: Message): string {
+function textOf(message: UserMessage): string {
   return message.content
     .filter(block => block.type === 'text')
     .map(block => block.text)

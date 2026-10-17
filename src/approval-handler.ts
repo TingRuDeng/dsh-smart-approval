@@ -1,6 +1,7 @@
 /** Fail-closed composition of mode selection, context extraction, and review. */
 
 import type { Session } from '@deepseek-ai/dsh-session'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import {
   decisionFromAssessment,
@@ -16,6 +17,7 @@ import {
   type ReviewContextLimits,
   type ReviewPayload,
 } from './review-context.ts'
+import type { ApprovalContext } from './session-context.ts'
 import type { ReviewMode } from './review-mode.ts'
 import type { DecisionOutcome } from './review-mode-storage.ts'
 
@@ -39,6 +41,8 @@ export interface SmartApprovalLogRecord {
 export interface SmartApprovalHandlerOptions {
   /** Resolve the independent automatic review mode for one Session lifecycle. */
   readonly currentMode: (session: Session) => ReviewMode
+  /** Capture the context folded for this session and call from committed events. */
+  readonly contextFor: (session: Session, callId: ToolCallId | undefined) => ApprovalContext
   /** Trusted-context limits. */
   readonly limits: ReviewContextLimits
   /** Resolve read-only target evidence for a normalized file mutation. */
@@ -87,7 +91,11 @@ export function createSmartApprovalHandler(options: SmartApprovalHandlerOptions)
 
     let context: ReturnType<typeof buildReviewPayload>
     try {
-      context = buildReviewPayload(request, options.limits)
+      context = buildReviewPayload(
+        request,
+        options.contextFor(request.agent.session, request.callId),
+        options.limits,
+      )
     } catch {
       return rejectOrHandoff(selectedMode, 'context-error', request, next, options)
     }
