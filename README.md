@@ -43,14 +43,14 @@ switches a session to Full access.
 ### Requirements
 
 - Node.js 24 or later.
-- DeepSeek Harness `>=0.1.2-alpha.1 <0.2.0` (current source verification baseline: `0.1.2-alpha.2`, commit `0a53fb55bea101816fa226bb964ae2bed71c343b`).
+- DeepSeek Harness `~0.2.1-alpha.2` (current source verification baseline: `0.2.1-alpha.2`, and the published `0.2.1-alpha.4` alpha packages). The `0.2.0-rc.2` release on npm `latest`/`next` is **not** covered by this candidate; prerelease ranges cannot span two different `major.minor.patch` tuples, so it needs its own verification matrix.
 - `pnpm` on `PATH`; DSH forwards plugin-management operations to pnpm.
 
 After installing the DSH CLI globally:
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.2-alpha.2
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.11
+npm install --global @deepseek-ai/dsh@0.2.1-alpha.4
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.12
 dsh --profile web --dump-config
 dsh web
 ```
@@ -58,12 +58,12 @@ dsh web
 For one-off execution:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add dsh-smart-approval@0.1.0-rc.11
-npx @deepseek-ai/dsh@0.1.2-alpha.2 --profile web --dump-config
-npx @deepseek-ai/dsh@0.1.2-alpha.2 web
+npx @deepseek-ai/dsh@0.2.1-alpha.4 plugin --profile web add dsh-smart-approval@0.1.0-rc.12
+npx @deepseek-ai/dsh@0.2.1-alpha.4 --profile web --dump-config
+npx @deepseek-ai/dsh@0.2.1-alpha.4 web
 ```
 
-The published `0.1.2-alpha.2` Harness package is the source verification
+The adjacent `deepseek-harness` source checkout is the source verification
 baseline for this candidate. To test the matching source checkout, use
 `pnpm dsh` as shown below.
 
@@ -147,19 +147,23 @@ Sessions without an explicit selection use `defaultMode`, which defaults to
 `smart`. Explicit selections are stored as a Session-bound `storage-domain`
 sidecar; an unselected session continues to follow the configured default so
 the host decision and browser projection stay aligned after configuration
-changes. The plugin never appends a non-portable event to the Session log.
-During an upgrade from an earlier preview, legacy `smart-approval/mode` events
-are read only for one-way sidecar migration; older `smart-approval` and
-`unattended` permission presets migrate to `smart` and `unattended`. Migration
-does not modify permission events.
+changes. The sidecar is the only writer of review mode: the plugin never
+appends an event to the Session log.
 
 ## How it works
 
 The plugin is an early answerer in DSH's `approval/request` waterfall:
 
-1. It resolves the real `tool/call` event by `callId`. DSH `bash`, `pwsh`,
-   `write`, and `edit` have closed, versioned action adapters. Unknown tools or
-   future argument fields fail closed.
+1. It folds the committed `session/event` push into a bounded per-session
+   context, so the exact `tool/call` arguments are already indexed before the
+   approval request is dispatched — no event-log rescan per request. DSH `bash`,
+   `pwsh`, `write`, and `edit` have closed, versioned action adapters. Unknown
+   tools or future argument fields fail closed. DSH never publishes a Session's
+   constructor seed on `session/event`, so a resumed or forked session folds
+   that seed once at announcement (`snapshotEvents(0, firstLiveSeq)`); this is
+   the plugin's only history read, it is bounded by the seed length, and it
+   replaces what would otherwise be a full human handoff on every request in a
+   resumed session.
 2. It combines the current turn with bounded recent direct-user text. Newer
    constraints override older scope, and the payload says when older history
    was omitted. Assistant messages, tool output, model-written justifications,
@@ -220,6 +224,7 @@ route, override the plugin row in the profile's `cordis.patch.yml`:
 | `maxToolArgumentChars` | `12000` | Tool-argument limit; overflow fails closed without truncation |
 | `maxUserMessages` | `4` | Current plus recent direct-user message limit; older history is omitted explicitly |
 | `maxUserContextChars` | `8000` | User-context limit; the current turn is never truncated, while older history may be omitted explicitly |
+| `maxTrackedToolCalls` | `32` | Tool calls tracked per turn as reviewer context; the newest are kept and an untracked call falls back to a human |
 | `decisionLogSize` | `50` | Decision-audit entries kept per Session lifecycle; `0` disables the audit entirely |
 
 The bundle does not override the `permission` row, so it does not replace a
@@ -250,6 +255,13 @@ profile's existing permission presets.
   precedent, or permanent grant.
 - Logs contain tool name, outcome, and short reason code, not full prompts,
   arguments, credentials, or model reasoning.
+- The reviewer context (recent direct-user text and raw tool arguments) is held
+  in process memory only, bounded per session, and dropped when the session is
+  disposed. It is never written to the decision audit, the session log, or the
+  browser projection. A session whose bound is exceeded — more than
+  `maxUserMessages` in the turn, an argument past `maxToolArgumentChars`, or a
+  call past `maxTrackedToolCalls` — fails closed to a human instead of being
+  reviewed from partial context.
 - The persistent decision audit (`/approval-log`) stores only the time, tool
   name, outcome, reason code, review mode, and tool-call id per decision. It
   never stores arguments, prompts, user text, or model output, and it is
@@ -273,8 +285,9 @@ profile's existing permission presets.
 
 | Path | Responsibility |
 |---|---|
-| `src/index.ts` | Service injection, legacy migration, projection, command, and lifecycle |
-| `src/review-mode.ts` | Legacy-event migration, command lifecycle fold, and browser projection |
+| `src/index.ts` | Service injection, context tracking, projection, command, and lifecycle wiring |
+| `src/session-context.ts` | Bounded in-memory approval context folded from committed `session/event` pushes |
+| `src/review-mode.ts` | Command-lifecycle fold and browser projection for the review mode |
 | `src/review-mode-storage.ts` | Session-lifecycle-bound review-mode sidecar and decision-audit table |
 | `src/client/` | Web selector and browser-plugin registration |
 | `src/approval-handler.ts` | Three-mode routing, waterfall decisions, and post-review mode recheck |
@@ -283,14 +296,15 @@ profile's existing permission presets.
 | `src/review-policy.ts` | Deterministic prechecks, strict classification parser, and local decision mapping |
 | `src/llm-reviewer.ts` | Reviewer prompt, stream parser, strict assessment protocol, and timeout |
 | `cordis.patch.yml` | Host-plugin mount only; it does not override permission presets |
-| `tests/` | Host, policy, protocol, migration, projection, and browser contracts |
+| `tests/` | Host, policy, protocol, tracked-context, delivery-guarantee, projection, and browser contracts |
 
 Invariants: permission and review mode never rewrite each other; missing or
 ambiguous evidence never becomes an automatic allow; only bounded direct-user
 text can establish authority and newer constraints win; previous approvals are
-never authorization; only a locally mapped low-risk benign assessment returns
-`allowed-once`; manual mode inspects no request content and calls no model; and
-a mode change during inspection or review invalidates the original result.
+never authorization; a tool call is only attributed to the turn that opened it;
+only a locally mapped low-risk benign assessment returns `allowed-once`; manual
+mode inspects no request content and calls no model; and a mode change during
+inspection or review invalidates the original result.
 
 ## Development
 
@@ -310,10 +324,11 @@ pnpm run build
 pnpm pack --dry-run
 ```
 
-The supported DSH range is `>=0.1.2-alpha.1 <0.2.0`; the current source verification
-baseline is `0.1.2-alpha.2` at commit `0a53fb55bea101816fa226bb964ae2bed71c343b`. Real-provider end-to-end
-review and human-fallback interaction still require deployment credentials and
-environment-specific acceptance testing.
+The supported DSH range is `~0.2.1-alpha.2`, verified against the adjacent
+`deepseek-harness` source checkout and the published `0.2.1-alpha.4` alpha
+packages. The `0.2.0-rc.2` release on npm `latest`/`next` is not covered by this
+candidate. Real-provider end-to-end review and human-fallback interaction still
+require deployment credentials and environment-specific acceptance testing.
 
 ## License
 
