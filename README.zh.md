@@ -38,14 +38,14 @@ Web 输入框底部应显示两个控件：
 ### 环境要求
 
 - Node.js 24 或更高版本。
-- DeepSeek Harness `>=0.1.2-alpha.1 <0.2.0`（当前源码验证基线：`0.1.2-alpha.2`，commit `0a53fb55bea101816fa226bb964ae2bed71c343b`）。
+- DeepSeek Harness `~0.2.1-alpha.2`（当前源码验证基线为 `0.2.1-alpha.2`，并已验证已发布的 `0.2.1-alpha.4` alpha 包）。npm `latest`/`next` 渠道的 `0.2.0-rc.2` **不在**本候选版本覆盖范围内：预发布版本范围无法同时覆盖两个不同的 `major.minor.patch` 元组，需要单独跑一轮验证矩阵。
 - `PATH` 中存在 `pnpm`；DSH 会把插件管理操作转发给 pnpm。
 
 全局安装 DSH 后：
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.2-alpha.2
-dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.11
+npm install --global @deepseek-ai/dsh@0.2.1-alpha.4
+dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.12
 dsh --profile web --dump-config
 dsh web
 ```
@@ -53,12 +53,12 @@ dsh web
 一次性运行：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add dsh-smart-approval@0.1.0-rc.11
-npx @deepseek-ai/dsh@0.1.2-alpha.2 --profile web --dump-config
-npx @deepseek-ai/dsh@0.1.2-alpha.2 web
+npx @deepseek-ai/dsh@0.2.1-alpha.4 plugin --profile web add dsh-smart-approval@0.1.0-rc.12
+npx @deepseek-ai/dsh@0.2.1-alpha.4 --profile web --dump-config
+npx @deepseek-ai/dsh@0.2.1-alpha.4 web
 ```
 
-已发布的 `0.1.2-alpha.2` Harness 包是本候选版本的源码验证基线。如需验证匹配的源码 checkout，
+相邻的 `deepseek-harness` 源码 checkout 是本候选版本的源码验证基线。如需验证匹配的源码 checkout，
 请按下方方式使用 `pnpm dsh` 运行 CLI。
 
 `npm dsh ...` 不是合法的 npm 命令。全局安装后使用 `dsh ...`，一次性运行使用
@@ -130,16 +130,18 @@ dsh plugin --profile web remove dsh-smart-approval
 
 尚未明确选择模式的会话使用配置的 `defaultMode`，默认是 `smart`。明确选择的模式保存在 DSH
 `storage-domain` 的会话伴随记录中；未选择的会话继续跟随当前默认值，确保修改配置后审批行为与
-浏览器投影一致。插件不会向不可移植的 Session 事件日志追加自定义事件。从早期预览版升级时，
-旧的 `smart-approval/mode` 事件只读迁移到伴随记录；更早的 `smart-approval` 与 `unattended` 权限
-preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事件。
+浏览器投影一致。伴随记录是审查模式的唯一写入方：插件不会向 Session 事件日志追加任何事件。
 
 ## 工作原理
 
 插件是 DSH `approval/request` waterfall 中的前置 answerer：
 
-1. 根据 `callId` 定位真实的 `tool/call` 事件。DSH `bash`、`pwsh`、`write`、`edit` 分别使用封闭、
-   有版本的动作适配器；未知工具或未来新增的未知参数都会失败关闭。
+1. 它增量折叠宿主推送的 `session/event`，维护一份有界的会话内上下文，因此在审批申请派发前，精确的
+   `tool/call` 参数就已经被索引——每个请求都不再回扫事件日志。DSH `bash`、`pwsh`、`write`、`edit`
+   分别使用封闭、有版本的动作适配器；未知工具或未来新增的未知参数都会失败关闭。DSH 不会把 Session
+   构造时的种子事件推送到 `session/event`，因此恢复会话或分叉会话会在宣告时一次性折叠这段种子
+   （`snapshotEvents(0, firstLiveSeq)`）——这是本插件唯一的历史读取，边界就是种子长度，用于避免
+   恢复会话中的每个请求都退化为人工审批。
 2. 将当前 turn 与有界的近期直接用户纯文本组合为授权上下文；新约束覆盖旧范围，载荷会明确标记是否省略了
    更早历史。Assistant 消息、工具输出、模型生成的 justification 和此前审批结果均不构成授权。
 3. 仅传递真实执行语义：Shell 传递命令及执行字段；`write` 传递精确路径和完整新内容；`edit` 传递精确
@@ -185,6 +187,7 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 | `maxToolArgumentChars` | `12000` | 工具参数上限；超限时不截断并失败关闭 |
 | `maxUserMessages` | `4` | 当前及近期直接用户消息上限；省略旧历史时会明确标记 |
 | `maxUserContextChars` | `8000` | 用户上下文上限；当前 turn 不截断，旧历史可带标记地省略 |
+| `maxTrackedToolCalls` | `32` | 每个 turn 作为审核上下文跟踪的工具调用数上限；保留最新的，未跟踪到的调用转人工 |
 | `decisionLogSize` | `50` | 每个会话生命周期保留的裁决审计条数；`0` 完全关闭审计 |
 
 本插件的 bundle 不覆盖 `permission` 行，因此不会替换 profile 已有的权限预设。
@@ -202,6 +205,10 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
   审批转人工，无人值守拒绝。
 - 每次自动授权只对当前调用有效，重复申请也会重新审查；不保存决策缓存、目录白名单、审批先例或永久授权。
 - 日志只记录工具名、结果和短原因码，不记录完整提示、参数、凭据或模型推理。
+- 审核上下文（近期直接用户文本与原始工具参数）只存在于进程内存，按会话定界，并在会话销毁时释放；
+  绝不写入裁决审计、Session 日志或浏览器投影。超出上限的会话——单个 turn 超过 `maxUserMessages`
+  条、参数超过 `maxToolArgumentChars`、或单 turn 调用超过 `maxTrackedToolCalls`——会转人工而不基于
+  残缺上下文审核。
 - 持久裁决审计（`/approval-log`）每条只保存时间、工具名、结局、原因码、审查模式和工具调用 id，
   绝不保存参数、提示、用户文本或模型输出，并可通过 `decisionLogSize: 0` 关闭。审计写入是旁路通道：
   写入失败不会改变审批结局。
@@ -217,8 +224,9 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 
 | 路径 | 职责 |
 |---|---|
-| `src/index.ts` | 服务注入、旧会话迁移、投影、命令和生命周期 |
-| `src/review-mode.ts` | 旧事件只读迁移、命令生命周期折叠和浏览器投影 |
+| `src/index.ts` | 服务注入、上下文跟踪、投影、命令和生命周期装配 |
+| `src/session-context.ts` | 由已提交 `session/event` 推送折叠出的有界内存审批上下文 |
+| `src/review-mode.ts` | 审查模式的命令生命周期折叠与浏览器投影 |
 | `src/review-mode-storage.ts` | Session 生命周期绑定的审查模式伴随存储与裁决审计表 |
 | `src/client/` | Web 端独立自动审查选择框和客户端插件注册 |
 | `src/approval-handler.ts` | 三模式路由、waterfall 决策和审核后模式复核 |
@@ -227,11 +235,12 @@ preset 分别迁移为 `smart` 与 `unattended`。迁移不会修改原权限事
 | `src/review-policy.ts` | 确定性前检、严格分类解析和本地决策映射 |
 | `src/llm-reviewer.ts` | 审核提示、流式解析、严格评估协议和超时 |
 | `cordis.patch.yml` | 仅挂载主机插件，不覆盖权限预设 |
-| `tests/` | 主机、策略、协议、迁移、投影和浏览器回归契约 |
+| `tests/` | 主机、策略、协议、跟踪上下文、投递保证、投影和浏览器回归契约 |
 
 必须保持的不变量：权限与自动审查状态互不改写；缺失或含糊的证据不能自动放行；只有有界的直接用户文本
-可以建立授权且新约束优先；此前审批不构成授权；只有本地映射后的低风险善意分类可以返回
-`allowed-once`；人工审批不能检查申请内容或调用模型；检查或审核期间切换模式必须使原结果失效。
+可以建立授权且新约束优先；此前审批不构成授权；工具调用只能归属到开启它的那个 turn；只有本地映射后的
+低风险善意分类可以返回 `allowed-once`；人工审批不能检查申请内容或调用模型；检查或审核期间切换模式
+必须使原结果失效。
 
 ## 开发
 
@@ -250,8 +259,9 @@ pnpm run build
 pnpm pack --dry-run
 ```
 
-支持的 DSH 范围是 `>=0.1.2-alpha.1 <0.2.0`，当前源码验证基线是 `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`）。真实 provider 的端到端审核和人工回退交互仍依赖部署凭据
-与具体环境验收。
+支持的 DSH 范围是 `~0.2.1-alpha.2`，已针对相邻 `deepseek-harness` 源码 checkout 与已发布的
+`0.2.1-alpha.4` alpha 包验证。npm `latest`/`next` 渠道的 `0.2.0-rc.2` 不在本候选版本覆盖范围内。
+真实 provider 的端到端审核和人工回退交互仍依赖部署凭据与具体环境验收。
 
 ## License
 

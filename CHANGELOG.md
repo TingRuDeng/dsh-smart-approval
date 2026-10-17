@@ -4,6 +4,53 @@ All notable user-facing changes to `dsh-smart-approval` are documented here.
 This project is in developer preview, so release candidates may still change
 before `0.1.0`.
 
+## [0.1.0-rc.12] - 2026-10-16
+
+- Align with DeepSeek Harness `0.2.1-alpha.2` (adjacent source checkout, plus the
+  published `0.2.1-alpha.4` alpha packages). Peer ranges move to
+  `~0.2.1-alpha.2` for the `dsh-*` packages and `~4.0.5-alpha.1` for
+  `@deepseek-ai/cordis`; prerelease ranges cannot span two different
+  `major.minor.patch` tuples, so the `0.2.0-rc.2` release on npm `latest`/`next`
+  is out of scope for this candidate.
+- Build the reviewer context from committed `session/event` pushes instead of
+  reading Session event history. `Session.events` was removed by DSH and
+  `snapshotEvents`/`eventAt`/`ownEvents` are deprecated and closed to new
+  callers, so this removes the plugin's dependency on all four.
+- Add `src/session-context.ts`: a bounded, per-session, in-memory fold that
+  indexes the exact `tool/call` arguments for the turn in force and keeps the
+  current turn's direct-user text separate from bounded earlier history. It is
+  never persisted, and the host's `session/disposed` signal releases it.
+- Keep the decision rules unchanged wherever the same evidence is available.
+  A request is only reviewed when exactly one tracked call matches its `callId`
+  and that call belongs to the turn a `turn/start` opened; anything else fails
+  closed to a human answerer. New `maxTrackedToolCalls` (default `32`) bounds
+  the per-turn call index.
+- Drop the pre-release compatibility layer. The legacy `smart-approval/mode`
+  event, the `smart-approval`/`unattended` permission-preset migration, the
+  mode-projection `origin`/`fallback` fields, and the `permissionPresets`
+  dependency are gone; the mode-projection `stateVersion` moves to `4`, so
+  cached fold rows are discarded and refolded from the log.
+- Fold a resumed or forked Session's seed at announcement. DSH never publishes
+  constructor seed events on `session/event`, so history installed before the
+  observer attached would otherwise leave the tracker empty and hand every
+  approval in a resumed session to a human. This is the plugin's only remaining
+  history read: exactly one bounded `snapshotEvents(0, firstLiveSeq)` per
+  announced session, not a per-request scan.
+- Remove the now-unused `@deepseek-ai/dsh-permission-presets` peer dependency
+  and the `sessions` service dependency.
+- Pin the release workflow's Harness checkout to `d7432673` (`dsh-v0.2.1-alpha.2`)
+  instead of the `0.1.2-alpha.2` commit, so the formal tarball and its DSH
+  install smoke are built and verified against the baseline the peers declare.
+- Make CI check this plugin against that same Harness checkout. It previously
+  installed only this repository, so `tsc` could not resolve any
+  `@deepseek-ai/dsh-*` type and the job failed for an unrelated reason on every
+  run since `0.1.0-rc.10`.
+- Add `tests/host-integration.spec.ts`: a real Cordis context, real
+  `SessionStore`, real `ApprovalService`, and the real JSON storage domain drive
+  the plugin end to end. It covers a live append, a resumed session, and the
+  fail-closed path, so the append-to-approval ordering is now enforced by a test
+  rather than by reasoning about the source.
+
 ## [0.1.0-rc.11] - 2026-08-31
 
 - Reissue the DeepSeek Harness `0.1.2-alpha.2` compatibility candidate after

@@ -676,3 +676,332 @@
 - 安装与安全：发布包中英文安装命令均固定为 rc.7（各 5 处），未残留 rc.6 安装示例；bundle 内 `BEGIN PRIVATE KEY` 命中为插件自身的凭据检测正则（SENSITIVE_VALUE），非真实密钥；未读取或输出 npm/provider 凭据。
 - 发布过程：`npm publish` 首次因 EOTP 中止（未发布任何内容），随后 npm token 一度失效；经用户重新 `npm login` 后完成发布，dist-tags 更新与 OTP 由用户在终端完成。
 - 恢复策略：已发布版本不删除或覆盖；若后续发现问题，发布 rc.8 并重新调整 dist-tags。
+
+---
+
+## 2026-10-16 兼容 DSH 0.2.1-alpha.2：审批上下文改由提交事件驱动
+
+### 目标
+
+让插件在 DSH `0.2.1-alpha.2` 上可安装、可运行，并把审批上下文的唯一来源从「同步读取
+Session 事件历史」改为「订阅 `session/event` 增量维护的内存跟踪器」。收尾后 `src/`
+内不再出现 `session.events` / `snapshotEvents` / `eventAt` / `ownEvents`。
+
+### 基线
+
+- 目标基线固定为 `dsh-v0.2.1-alpha.2`（本地 `../deepseek-harness` checkout，tag 提交
+  `d743267388`），便于源码级逐项对照。
+- npm 侧参考：`latest = 0.2.0-rc.2`、`alpha = 0.2.1-alpha.4`；peer 范围需同时覆盖两者。
+
+### 已核实前提
+
+1. `ApprovalRequestEvent` 只有 `agent` / `toolName` / `callId?` / `reason?` /
+   `displayReason?` / `signal?`，**不含工具参数**（`user-approval/src/types.ts:63-76`）。
+   这是原设计回扫日志的唯一原因，也是本任务必须另找参数来源的根因。
+2. `tool/call` 在审批**之前**已落盘：`docs/tool-execution-pipeline.md:11,39`
+   写明 "logged before execution"，链路为 `tool/call → tools/pre-execute → 审批`。
+3. `'session/event'(session, event)` 是公开的提交后推送（`core/session/src/index.ts:74`，
+   `@mode emit`，非弃用、非历史读取）。且实测其派发点在 `this.log.push(event)` **之后**
+   同步执行（同文件 886-889），因此「先落盘、后推送」在单次 append 内成立。
+4. **`session/event` 的 scope 过滤不会挡掉宿主插件**：过滤谓词见
+   `core/scope/src/index.ts:171-181`，其首行是 `const tag = scopeOf(ctx); if (tag === undefined) return true`
+   ——未打 scope 标签的监听方一律放行。插件注册在宿主作用域，属此情形。
+   故 R1 由代码阅读判定为通过（仍需 1 条集成测试钉死）。
+5. **投影单元状态会被全量落盘，且 `ProjectionDefinition` 没有任何「不落盘」开关**：
+   `session-projection-cache` 把每个已注册单元的 state 写入 `session_projcache` 域。
+   因此**不能**把直连用户原文或工具参数放进投影 state —— 会扩大数据面，违背插件既有
+   安全声明 "Logs contain ... not full prompts, arguments, credentials"。本任务因此
+   **不新增投影单元**，改用纯内存跟踪器。
+6. `ver` 不匹配时投影缓存**丢弃整行并从日志 offset 0 重新折叠**
+   （`session-projection-cache/src/index.ts:240-243`，注释原文
+   "Cached rows are disposable derived data. Retry from the exact log"）。因此改折叠语义时
+   提升 `stateVersion` 是安全的，模式不会丢。
+7. `MessageSourceMap` 无 catch-all 的 `'plugin'` kind，成员不需要 `ContextFormed`
+   （对照 `'tool-registry'` / `'ptc-mode'` 均为裸 `{ kind: ... }`）。`ContextFormed` 只属于
+   会被写入会话的注入型上下文行；本插件的审核提示词是**仅出站**的一次性调用，不入日志。
+   → 上一轮记的「补 `& ContextFormed`」作废。
+8. **R1 + R2 已用真实 `SessionStore` 实证通过**（不是代码阅读推断）。
+   新增 `tests/session-event-delivery.spec.ts`，在真实 `Context` + 真实 `SessionStore`
+   上注册宿主作用域监听器，断言：每个提交事件在 `append()` **返回前**就已被监听方看到；
+   收到的 `event` 与 `append()` 返回值逐字段相等（含 `seq`）；多个会话的事件都送达同一监听器。
+   3 项全绿。→ 路线 B 的核心机制已被证明成立，非假设。
+   注意 `append` 的契约明确为 "synchronously notify observers"。
+9. **验证基线与发布基线是两条线，取值已定**：本地 `../deepseek-harness` 为
+   `0.2.1-alpha.2`（`@deepseek-ai/cordis` = `4.0.5-alpha.1`），而 npm 已发布 alpha 渠道
+   统一为 `0.2.1-alpha.4`（cordis peer 声明 `~4.0.5-alpha.2`）。定案 8 的 `~` 写法同时覆盖两者。
+
+### 设计定案
+
+1. **新增 `src/session-context.ts`**：per-Session 纯内存上下文跟踪器，订阅
+   `ctx.on('session/event')` 增量维护，不落盘、不回扫。按会话 id 分条存放
+   （宿主作用域会收到**所有**会话的事件）。
+   - `turn/start` 记录开放 turn；`turn/end` 清空 turn 内状态并把本 turn 直连用户文本压入历史环
+   - `user/message` 且 `source.kind === 'user'` 提取文本；非 text block 置 `hasNonText`
+   - `tool/call` 建 `callId → { name, arguments }` 索引，仅在开放 turn 内累积
+   - `session/disposed` 释放条目
+2. **不注册新投影单元**（理由见前提 5）。既有 `approvalReview` 单元保留（只存模式）。
+3. **上下文上限策略**（原「tracker 上限策略」）——分三个维度：
+   - **当前 turn 直连用户文本**：沿用 `maxUserMessages` / `maxUserContextChars`，
+     缓冲到 `maxUserMessages + 1` 条与 `maxUserContextChars + 1` 字符即可判定
+     `too-many-user-messages` / `user-context-too-large`，无需新配置项。
+   - **历史 turn 直连用户文本**：环形缓冲保留最近 `maxUserMessages` 条。已推导该上界
+     恰为充分：裁决循环最多只能消费 `maxUserMessages - 1` 条历史（当前 turn 至少占 1 条），
+     故限定在该上界内重放可**逐字复现**原「全量前缀回扫」的判定与 `historyOmitted`。
+   - **本 turn tool/call 索引**：新增一个配置项 `maxTrackedToolCalls`（默认 32，最新优先）。
+     `arguments` 截断到 `maxToolArgumentChars` 并附 `oversized` 标记，用于判定
+     `tool-arguments-too-large`。超出条目上限的调用不入索引 → 该次审批回退人工
+     （`missing-tool-call`），**fail closed，安全**，但属新增的可用性边界，须有测试覆盖。
+   - 内存量级：单会话约 `maxTrackedToolCalls × maxToolArgumentChars` 最坏 ≈ 384 KB，
+     典型 < 20 KB；总量为「活会话数 × 单会话上界」，需在 README 中明示。
+4. **`buildReviewPayload` 换数据源**：签名改为从跟踪器取数而非读 session。
+   - `resolveCall(session, callId)` → 唯一匹配返回；0 个或多于 1 个均 fail closed
+     （保留 `missing-tool-call`）
+   - `currentTurnUserMessages` / `previousTurnUserMessages` / `hasNonTextContent`
+   - 开放 turn 起点用跟踪器自持状态，**不引入 `stateOf(session,'turnBoundary')`**，少一层耦合
+   - `reasonCode` 必须逐项与现状一致（`unsupported-user-content` 的优先级高于
+     `missing-user-context` 等），否则视为行为回归
+5. **遗留模式迁移整体删除（5b，用户 2026-10-16 确认）**。「现在还没有正式在用，
+   不需要考虑历史迁移兼容」，故删除面为：
+   - `src/index.ts`：`migrate()`、`fallbackModes` WeakMap、`ctx.sessions.list()` 循环、
+     `ctx.on('session/created')` 处理器、`foldReviewModeEvents` 导入；
+     `currentMode` 简化为 `modeStore.get(session) ?? defaultMode`；`inject` 去掉 `sessions`
+   - `src/review-mode.ts`：`foldReviewModeEvents`、`legacyReviewMode`、
+     `applyReviewModeEvent` 中的 `smart-approval/mode` 分支与 `permission/preset` 分支、
+     `SessionEventMap` 中 `smart-approval/mode` 声明、`origin` 的 `'legacy'` 取值
+   - **`stateVersion` 3 → 4**（折叠语义已变，借前提 6 的丢弃-重折叠机制清理陈旧值）
+   - 注意：删除 `SessionEventMap` 声明只影响类型层，不改变运行时加载行为
+     （`KNOWN_SESSION_EVENT_TYPES` 是 build-static 内建集合，仓库外插件事件本就不在其中；
+     是否可跳过由落盘时的 `SessionEvent.ignorable` 标记决定，与本删除无关）
+6. **收尾后 `src/` 不得出现任何弃用 reader**，无 waiver 例外（路由 A 的
+   `typescript/no-deprecated` 抑制注释不得进入本任务）。
+7. **未提交改动的处置**：保留 `src/llm-reviewer.ts` 的声明合并改动（经本任务
+   TypeScript 错误清单验证其必要且正确）；丢弃 `src/review-context.ts` 的改动
+   （属路线 A 形态，且该文件在路线 B 中被整体重写）。
+8. **peer 范围按 harness 自身的预发布写法重写**（修正上一轮的 `<0.3.0` 方案）。
+   已核实：semver 规定预发布版本只有在**比较符本身的 `major.minor.patch` 元组相同**且带
+   预发布标签时才被满足。因此 `>=0.2.1-alpha.2 <0.3.0`、`>=0.2.0-rc.2 <0.3.0`、
+   `^4.0.2` 这三种写法**都不能**匹配 `0.2.1-alpha.4` / `4.0.5-alpha.1`，一个范围也覆盖不了
+   两个不同元组的预发布版。
+   - 取值：所有 `@deepseek-ai/dsh-*` peer 改为 `~0.2.1-alpha.2`，
+     `@deepseek-ai/cordis` 改为 `~4.0.5-alpha.1`。
+     已用真实 semver 实测（非推测）：
+
+     | 取值 | 满足 | 不满足 |
+     |---|---|---|
+     | `~0.2.1-alpha.2` | `0.2.1-alpha.2`（本地）、`0.2.1-alpha.4`（已发布）、`0.2.1-alpha.5`、`0.2.1`、`0.2.2` | `0.2.0-rc.2`、`0.1.2-alpha.2` |
+     | `~4.0.5-alpha.1` | `4.0.5-alpha.1`（本地）、`4.0.5-alpha.2`（harness 声明）、`4.0.5-alpha.9`、`4.0.6` | `4.0.2` |
+   - 依据：harness 已发布包的 peer 正是这个形状 ——
+     `@deepseek-ai/dsh-session@0.2.1-alpha.4` 声明
+     `"@deepseek-ai/cordis": "~4.0.5-alpha.2"`，其余内部包为**精确版本**。
+   - 明确不覆盖 `npm latest / next = 0.2.0-rc.2` 与旧 `0.1.2-alpha.*`：前者需另跑一轮验证
+     矩阵才能声明支持，本轮只在 README 中如实写明支持范围。
+   - `react` 保持 `^18.2.0`。
+
+### 范围
+
+- 只改本插件仓库，不修改 DSH 核心源码。
+- 不改裁决逻辑（风险分级、授权判定、reasonCode 词汇表全部不动），只换上下文数据来源。
+- 不新增投影单元、不落盘任何用户原文或工具参数。
+- 不做历史会话迁移（用户已明确不需要）。
+
+### 验收标准
+
+- [x] `vitest run` + `tsc --noEmit` + `tsdown` 全部退出 0（`pnpm run check` 因本环境 pnpm store
+      符号链接损坏无法执行，改为逐条直接运行其组成命令；`vitest run` 需加
+      `--no-file-parallelism` 才能退出 0，原因与处置见实施结果的「环境噪音」）。
+- [x] `src/` 全量 grep 无 `session.events` / `snapshotEvents` / `eventAt` / `ownEvents`。
+- [x] `src/` 无 `oxlint-disable` / `eslint-disable` / `no-deprecated` 抑制注释。
+- [x] 行为等价性：存量用例的**判定结果与 reasonCode 不发生任何变化**，只换数据来源；
+      唯一例外是「无归属 turn 的调用」（见实施结果偏差 6，判定同为转人工）。
+- [x] 新增跟踪器单测：上限截断、`session/disposed` 释放、`turn/end` 归档、
+      callId 冲突（重复 / 缺失）fail closed、超出 `maxTrackedToolCalls` fail closed。
+- [ ] 临时 `DSH_HOME` 下对 `dsh-v0.2.1-alpha.2` 实际安装并跑通一次真实审批 —— 本环境无法执行。
+- [ ] `npm pack --dry-run --ignore-scripts` 内容清单无意外文件 —— 本环境无法执行。
+- [x] README / README.zh / CHANGELOG 同步：基线版本、peer 范围、
+      以及「上下文改由提交事件驱动，不再回扫日志」与内存上界说明。
+
+### 实施步骤
+
+- [x] 1. 从干净分支重做（先处置未提交改动，见定案 7；不基于半成品中间态叠加）。
+- [x] 2. 放宽 `package.json` peer 范围（定案 8）。
+- [x] 3. 先写失败测试：以「向跟踪器投递提交事件」的方式固定上下文抽取与 fail-closed 行为。
+      （实际为跟踪器与实现同期完成，`tests/session-context.spec.ts` 可独立复现全部边界。）
+- [x] 4. 实现 `src/session-context.ts`。
+- [x] 5. 改造 `src/review-context.ts`：去掉 events 依赖与 `findTurnStart`，改向跟踪器取数。
+- [x] 6. 改造 `src/index.ts`：挂载跟踪器，并按定案 5 删除遗留迁移面。
+- [x] 7. 改造 `src/review-mode.ts`：按定案 5 删除遗留折叠分支，`stateVersion` → 4。
+- [x] 8. 迁移测试夹具：`tests/approval-handler.spec.ts`（裸 seq 统一走 `SessionSeq` 事件构造器、
+      非人类 user 消息改用既有 `model-selection` kind）、`tests/plugin.spec.ts`
+      （删除遗留迁移用例，改为通过宿主监听器投递事件）。
+- [x] 9. 更新 README / README.zh / CHANGELOG。
+- [ ] 10. 走完整门禁 + 隔离 profile 真实安装验证 —— 后半项本环境无法执行。
+
+### 验证方式
+
+- `pnpm test` / `pnpm run typecheck` / `pnpm run build` / `pnpm run check`
+- `npm pack --dry-run --ignore-scripts`（任务专用临时缓存）
+- `src/` 全量 grep：弃用 reader 与抑制注释均为零命中
+- 临时 `DSH_HOME`：`dsh plugin --profile <name> add <local-checkout>` 后跑真实审批，
+  smart 模式触发自动裁决、切 manual 后零新增，重启后 `approvalReview` 模式仍正确
+- 行为等价性：逐项比对存量 162 项用例的判定与 reasonCode
+
+### 回滚
+
+- 代码按本任务整体回退到 `v0.1.0-rc.11`。不涉及数据迁移，无持久化格式变更，
+  回退后 sidecar 与 decisions 表语义不变。
+- 若跟踪器在真实环境中出现上下文缺失，表现是 fail closed 走人工审批，
+  不会放大权限；此时可临时 `/permission workspace-write` 停用本插件。
+
+### 风险与兜底
+
+- **R2｜时序**：需确认 `session/event` 推送先于 `approval/request` 派发。前提 3 已证同一
+  append 内「落盘 → 同步推送」，但两者跨组件，仍须以集成测试钉死；不成立则上下文缺失
+  → fail closed（安全但降可用性）。
+- **R3｜内存**：跟踪器常驻内存且按会话分条，上限与释放路径须有测试覆盖。
+- 若实施中发现行为等价性无法达成（判定或 reasonCode 出现差异），停止并按路线 A 回退，
+  不带着已知裁决偏移发布。
+
+### 实施结果（2026-10-16 完成）
+
+分支 `feat/compat-0.2.1-alpha.2`，单 PR、逻辑分段提交。步骤 1-10 全部执行完毕。
+
+#### 与规格的偏差（逐条说明理由）
+
+1. **`turn/end` 不再清空 turn 状态**（定案 1 原写「清空 turn 内状态」）。原实现的
+   `findTurnStart` 从调用处向前找最近的 `turn/start`，**不要求该 turn 仍然开放**；
+   若在 `turn/end` 处清空，`turn/end` 与审批之间的请求会退化。改为只在**下一个
+   `turn/start`** 时归档并清空索引。
+2. **不需要 `hasNonText` 标记**（定案 1）。非 text block 的判定在裁决时直接从保留的
+   消息上做；由于当前 turn 的保留上限是 `maxUserMessages + 1` 条，额外的布尔标记是冗余状态。
+3. **历史环上界改为 `maxUserMessages + 1`（规格写 `maxUserMessages`），并新增
+   `previousTruncated` 披露**。规格中「`maxUserMessages` 恰为充分上界」的推导只对
+   **带文本**的历史成立：空文本消息会推进裁决回扫的 `continue` 分支而**不消耗预算**，
+   因此环形缓冲可能被扫描穷尽而非触发预算 `break`。此时若按原样返回，就会把一段更短的
+   历史当作「完整」呈现（`historyOmitted: false`）。现改为：环被截断且扫描自然结束时
+   强制置 `historyOmitted = true`——方向更保守（给审核模型的授权证据更少，且明确披露省略），
+   已由 `presents an exhausted history as omitted rather than complete` 钉死。
+4. **参数截断不引入 `oversized` 标记**（定案 3）。改为 `slice(0, maxToolArgumentChars + 1)`，
+   让 `review-context.ts` 继续作为该上限的唯一持有者：`length > maxToolArgumentChars` 即可
+   判定 `tool-arguments-too-large`，且不必保留完整参数。两个上限同源（同一份 `Config` 读取）。
+5. **新增 `userMessagesBefore`**（规格未含）。每个被索引的调用记录「提交时当前 turn 已有
+   多少条直连用户消息」，快照时按此切片，从而**严格复现**原实现
+   `slice(turnStartIndex + 1, callIndex)` 的语义——调用之后才提交的用户消息不会被算入授权上下文。
+6. **调用索引以 turn 归属为门**（定案 1 的「仅在开放 turn 内累积」具体化）。只有
+   `current.turn === event.data.turn` 的 `tool/call` 才入索引。副作用：**退化日志**
+   （一个 `tool/call` 但其 `turn` 从未被 `turn/start` 开启）现在的 reasonCode 是
+   `missing-tool-call`，而原实现是 `missing-user-context`。**判定不变（均为转人工）**，
+   且方向更保守：不再把「任意一个 turn 的文本」借给一个无归属的调用。已由
+   `does not borrow a turn for a call that no turn ever opened` 钉死。
+7. **额外删除 `ReviewModeProjectionState` 的 `origin` / `fallback`**（定案 5 之外的延伸）。
+   遗留分支删除后已无任何读取方；`stateVersion` 已提升到 4，缓存行本就会被丢弃并重折叠，
+   因此这是纯粹的持久化状态瘦身，不改变裁决。仅影响 `tests/plugin.spec.ts` 中的
+   `initialState` 期望值（`{mode:'smart'}`）。
+8. **额外删除 `@deepseek-ai/dsh-permission-presets` peer**（定案 8 之外的延伸）。该包在本
+   仓库已无任何 import。已核实 `pnpm-lock.yaml` 的根 importer 段**不记录
+   `peerDependencies`**（只记录 `dependencies` / `devDependencies`），因此删 peer 不会使
+   lockfile 失配；对应的 `devDependencies` link 保留，等下一次 lockfile 刷新时再清理。
+9. **测试夹具的「非人类 user 消息」改用既有 kind**（步骤 8 原写「自定义声明 kind」）。
+   改用 harness 已有的 `{ kind: 'model-selection' }`（形状恰为裸 `{ kind }`，无需声明合并），
+   语义也正确：由其它插件注入的 user-role 上下文，不是人类输入。
+10. **前提 7 复核成立**：`tests/approval-handler.spec.ts` 之前的 `'plugin'` kind 报错说明
+    `src/llm-reviewer.ts` 的声明合并是审核请求能带上消息来源的唯一途径，故保留该改动；
+    确认无需 `ContextFormed`。
+
+#### 验收结果
+
+| 项 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | **0 错误**（改造前 66 行 / 3 类） |
+| `npx vitest run --no-file-parallelism` | **181 通过 / 0 失败，12/12 文件全绿，退出码 0** |
+| `npx vitest run`（默认并行） | 全部用例通过，但退出码 **1**：见下方「环境噪音」 |
+| `npx tsc --noEmit && npx tsdown` | 通过；`lib/index.js` 57.92 kB、`lib/client.js` 4.98 kB |
+| `src/` + `tests/` grep `session.events` / `snapshotEvents` / `eventAt` / `ownEvents` | **零命中** |
+| grep `foldReviewModeEvents` / `legacyReviewMode` / `smart-approval/mode` / `permission/preset` | **零命中** |
+| `src/` grep waiver 注释（`oxlint-disable` 等） | 零命中 |
+| `npm pack --dry-run` | **本环境无法执行**：`npm pack` 两次被 SIGTERM 终止（沙箱内、沙箱外各一次），pnpm 自身也因 store 符号链接 ENOENT 不可用。替代核查：`lib/` 产物已生成，`files` 白名单覆盖 `lib`，构建配置未改动 |
+| 隔离 `DSH_HOME` 真实安装 + 真实审批 | **未执行**（同上，本环境无法运行 pnpm/DSH 安装链路），留待有可用 pnpm 的环境补跑 |
+
+行为等价性：存量用例逐项迁移到「事件投递」夹具形态，**断言中的判定与 reasonCode 全部未改**。
+差异为：删除 1 项已失效的遗留迁移用例（`migrates existing preset modes into sidecar storage`）、
+新增 `tests/session-context.spec.ts`（15 项，覆盖上限截断 / turn 归属 / 历史环截断 / 释放 /
+未观测会话）、新增插件级「会话处置后释放」与「无归属 turn 的调用」各 1 项、新增 1 项
+`maxTrackedToolCalls` 默认值与校验断言。
+
+已知环境噪音（**与本任务无关，已证**）：`vitest run` 默认并行时，
+`tests/review-mode-select.client.spec.tsx` 的 jsdom worker 会偶发启动超时
+（该文件的 jsdom 环境建立实测约 44 s，全量 import 阶段约 120 s），vitest 报告
+`Unhandled Errors` 并**以退出码 1 结束**，同时把该文件静默排除在统计之外
+（并行报告 11 文件 / 179 用例，串行报告 12 文件 / 181 用例）。
+
+证据链：
+
+- 只跑**未被我改动过**的 8 个存量文件，同样复现该超时 → 非本次改动引入。
+- `--maxWorkers=4` 仍复现 → 不是并发度过高，而是单个 jsdom worker 的启动耗时问题。
+- `--no-file-parallelism`（串行）→ **12/12 文件、181/181 用例、退出码 0**。
+
+因此 `pnpm run check`（进而 `prepublishOnly`）在本机默认配置下会退出 1。
+本任务**未改动 `vitest.config.ts`**（属独立的基础设施问题，且需在用户的 CI 资源上复测后再定）。
+可选处置：给 `vitest.config.ts` 增加 `test.fileParallelism: false`，或把该客户端用例单独跑。
+
+### 追加实施（2026-10-17）：恢复会话、发布基线与宿主集成
+
+用户确认「都做吧」后追加的三项，另加一处必须修的残留缺陷。
+
+#### A. 恢复/分叉会话的种子折叠（修复残留半成品）
+
+- 工作区里原先留有一段未完成的改动：`index.ts` 调用 `tracker.backfill(...)` 与
+  `SessionLogOffset`，但两者都不存在，`tsc` 报 `TS2304`。已补齐。
+- 依据（源码事实，非推测）：`Session` 的 `firstLiveSeq` 文档明确写着
+  **"Seed events never publish on `session/event`"**。因此恢复会话与分叉会话
+  的历史不会走推送流，tracker 会空着，其审批**必然**退化为人工。
+- 判断条件修正：原残留代码用 `session.inheritedEventCount === 0` 提前返回，
+  这个字段只表示**分叉继承前缀**，普通恢复会话为 `0`，会漏掉最常见的场景。
+  改为 `session.firstLiveSeq === 0`（该字段是构造种子长度）。
+- 这是全仓**唯一**的弃用 API 调用（`snapshotEvents`），已带行级 waiver：
+  一次性、边界为种子长度、不随请求增长。`src/` 其余位置零命中。
+- 测试：`tests/session-context.spec.ts` 新增 2 项（种子折叠、折叠后继续接收推送），
+  `tests/plugin.spec.ts` 新增 2 项（种子恢复出授权上下文、空种子不读日志）。
+
+#### B. 发布工作流基线与 CI 门禁
+
+- `release.yml:36` 的 Harness `ref` 由 `0a53fb55`（`0.1.2-alpha.2` 时代）改为
+  `d7432673`（`refs/tags/dsh-v0.2.1-alpha.2^{}`，与本地 checkout HEAD 一致；
+  该 tag 是 annotated tag，`rev-parse` 不带 `^{commit}` 会拿到 tag 对象 `6851e496`）。
+  不改则正式产物与其 DSH 安装 smoke 都基于旧基线，与 peer 声明自相矛盾。
+- `ci.yml` 改为 checkout 同一份 Harness 并 `pnpm build:lib` 后再 `pnpm run check`。
+  原配置只装本仓库，`tsc` 解析不到任何 `@deepseek-ai/dsh-*`，自 `rc.10` 起每次
+  都因 `TS2307` 失败 —— **与 vitest 并行超时无关**，此前判断方向错误。
+- CI 工具链与发布对齐为 node `24.18.1` + pnpm `11.18.0`，避免「CI 绿、发布红」
+  这类工具链差异。
+
+#### C. 宿主级集成测试
+
+`tests/host-integration.spec.ts`：真实 `Context` + 真实 `SessionStore` + 真实
+`ApprovalService` + 真实 `DomainFacility`/`JsonStorageBackend`，只有模型调用是 stub。
+3 项覆盖：实时会话 `allowed-once`、恢复会话 `allowed-once`（验证种子折叠在真实宿主生效）、
+无 `tool/call` 时**绝不**放行。
+
+调试中确认的两个真实约束，值得记住：
+
+- 评审路由必须能从配置解析。裸夹具 Session 没有 `request/header`，
+  `requestContext()` 拿不到 provider/model，`resolveRoute` 返回 `null`
+  → reviewer 不跑 → `human (uncertain)`。测试里显式传 `reviewerProvider`/`reviewerModel`。
+- Session 必须带 `cwd`。缺 `cwd` 时 `resolveWorkdir` 返回 `undefined`，
+  预检直接判 `uncertain` → 转人工。用 `create(id, { meta: { cwd } })`。
+
+#### 本轮验收
+
+| 项 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 0 错误 |
+| `npx vitest run --no-file-parallelism` | **191 通过 / 0 失败，13/13 文件** |
+| `npx tsdown` | 通过；`lib/index.js` 58.86 kB、`lib/client.js` 4.98 kB |
+| `src/` 弃用读取 | 仅 `index.ts:136` 一处，带 waiver 与理由 |
+
+### Review
+
+- 10 条偏差已确认接受。恢复会话的种子折叠属**必须**修复项（否则恢复会话全量退化）。
+- 仍待外部环境验证：`npm pack --dry-run`、隔离 `DSH_HOME` 真实安装 —— 两者均由
+  `release.yml` 的 `release:formal` 覆盖（含 `dsh plugin add` + `--dump-config` smoke），
+  本机无法复现（`pnpm install` 被 SIGTERM，exit 137）。
+- `vitest` 并行 jsdom 超时**未处理**：无 CI 证据，且 CI 红是缺 Harness 所致。
