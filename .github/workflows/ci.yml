@@ -23,7 +23,7 @@ jobs:
           repository: deepseek-ai/deepseek-harness
           # Pinned to the exact baseline the plugin declares in its peers.
           # Keep identical to `.github/workflows/release.yml`.
-          ref: d743267388641bc76f17c45ce8b4c231aed1d32c
+          ref: 687f282e8625c6b8d11ff58211a90524be2e4317
           path: deepseek-harness
       # Same toolchain as the release workflow, so a green check here cannot
       # disagree with a red release for a tooling reason.

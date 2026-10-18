@@ -35,7 +35,8 @@
     "prepare": "pnpm run build"
   },
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=24.0.0",
+    "dsh": "~0.2.1-alpha.2"
   },
   "packageManager": "pnpm@11.7.0",
   "publishConfig": {
@@ -106,7 +107,6 @@
     "@deepseek-ai/dsh-commands": "link:../deepseek-harness/packages/interaction/commands",
     "@deepseek-ai/dsh-fs": "link:../deepseek-harness/packages/fs/fs",
     "@deepseek-ai/dsh-llm": "link:../deepseek-harness/packages/llm/llm",
-    "@deepseek-ai/dsh-permission-presets": "link:../deepseek-harness/packages/interaction/permission-presets",
     "@deepseek-ai/dsh-session": "link:../deepseek-harness/packages/core/session",
     "@deepseek-ai/dsh-session-projection": "link:../deepseek-harness/packages/session/session-projection",
     "@deepseek-ai/dsh-storage": "link:../deepseek-harness/packages/storage/storage",
