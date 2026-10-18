@@ -1049,3 +1049,46 @@ DSH 已发到 `dsh-v0.2.1-rc.2`（npm `next` = `0.2.1-rc.2`；`latest` 仍是 `0
   `release:formal` 覆盖（本机 `pnpm install` 仍 exit 137）。
 - 真机 web 端渲染未验证：客户端包在 rc.2 有较大改动（`ui-conversation` 36 文件），
   目前只有 jsdom 组件测试兜底，没有真实浏览器冒烟。
+
+---
+
+## 2026-10-18 rc.12 发布：npm 成功，registry 回读超时
+
+`v0.1.0-rc.12` tag 已推（annotated），Release RC run `39122728083`：
+`build` / `build_attest` / `stage_draft` 全绿，`publish_npm` 的**发布步骤成功**，
+但紧随其后的 `Verify registry tarball and provenance` 失败：
+
+```
+Error: npm version verification did not become ready after 8 attempts (last status 404)
+```
+
+即 `fetchNpmJsonWithRetry` 默认 8 次 × 3 秒 = 24 秒窗口，registry 回读没跟上。
+
+### 已核实的事实（不是猜测）
+
+- `npm view dsh-smart-approval@0.1.0-rc.12` 存在，`dist.integrity` =
+  `sha512-mHFl…qyg==`；`dist-tags.latest = 0.1.0-rc.12`。
+- 从 GitHub release 资产下载的 `dsh-smart-approval-0.1.0-rc.12.tgz`
+  sha256 = `d201ada3…3f95`，与 `SHA256SUMS`、workflow 的 `TARBALL_SHA256` 一致；
+  本地算的 sha512 与 npm 的 `dist.integrity` 逐字节相同 → **两侧是同一个 tarball**。
+- 因此 `finalize_release` 被 skip 只是草稿没转正，不是产物问题。
+- 手工按 `finalize_release` 的语义补做：校验 6 个资产后
+  `PATCH releases/416408240 {draft:false, prerelease:true, make_latest:false}`，
+  现在 release 状态 `draft:false / prerelease:true`。
+
+### 同类病史（同一根因，不是偶发）
+
+`v0.1.0-rc.8`、`v0.1.0-rc.10` 的 GitHub release **至今仍是 Draft**，
+而 `rc.9` / `rc.11` 是 Pre-release。三次失败点完全相同：发布成功 → 回读 404。
+
+### 修复
+
+`publish_npm` 的校验步骤改为 30 次 × 10 秒（5 分钟窗口），
+三处读取（version / tarball / packument）统一用 `registryDeadline`；
+tarball 那条用 `wait()` 传同样的间隔。仍然有界失败，不会挂死。
+另补 2 个 `fetchNpmJsonWithRetry` 单测（404 后重试成功、耗尽后报错并核对次数）。
+
+### 待办
+
+- rc.13 发布时会第一次走这条更长的等待；若 5 分钟仍不够，再改成指数退避。
+- rc.8 / rc.10 的草稿 release 未处理（历史遗留，产物已过时）。

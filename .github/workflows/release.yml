@@ -415,15 +415,23 @@ jobs:
             join(process.env.GITHUB_WORKSPACE, 'release-source/scripts/release-preview-lib.mjs'),
           ).href)
           const encoded = encodeURIComponent(process.env.PACKAGE_NAME)
+          // npm has accepted the publish long before every read replica answers:
+          // rc.8, rc.10, and rc.12 each published successfully and then failed a
+          // 24-second readiness window with HTTP 404. Give propagation five
+          // minutes, and still fail bounded when the version is genuinely absent.
+          const registryDeadline = { attempts: 30, delayMs: 10000 }
           const version = await fetchNpmJsonWithRetry({
             url: `https://registry.npmjs.org/${encoded}/${encodeURIComponent(process.env.VERSION)}`,
             label: 'npm version verification',
             isReady: metadata => metadata.dist?.attestations?.provenance?.predicateType === 'https://slsa.dev/provenance/v1',
+            ...registryDeadline,
           })
           if (version.dist.integrity !== process.env.TARBALL_INTEGRITY) throw new Error('npm integrity mismatch')
           const tarball = await fetchNpmTarballWithRetry({
             url: version.dist.tarball,
             label: 'npm tarball download',
+            attempts: registryDeadline.attempts,
+            wait: () => new Promise(resolve => setTimeout(resolve, registryDeadline.delayMs)),
           })
           const digest = createHash('sha256').update(tarball).digest('hex')
           if (digest !== process.env.TARBALL_SHA256) throw new Error('npm tarball SHA-256 mismatch')
@@ -431,6 +439,7 @@ jobs:
             url: `https://registry.npmjs.org/${encoded}`,
             label: 'npm packument verification',
             isReady: metadata => metadata['dist-tags']?.latest === process.env.VERSION,
+            ...registryDeadline,
           })
           if (packument['dist-tags']?.latest !== process.env.VERSION) throw new Error('npm latest tag mismatch')
           NODE
