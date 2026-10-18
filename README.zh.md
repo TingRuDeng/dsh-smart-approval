@@ -38,13 +38,13 @@ Web 输入框底部应显示两个控件：
 ### 环境要求
 
 - Node.js 24 或更高版本。
-- DeepSeek Harness `~0.2.1-alpha.2`（当前源码验证基线为 `0.2.1-alpha.2`，并已验证已发布的 `0.2.1-alpha.4` alpha 包）。npm `latest`/`next` 渠道的 `0.2.0-rc.2` **不在**本候选版本覆盖范围内：预发布版本范围无法同时覆盖两个不同的 `major.minor.patch` 元组，需要单独跑一轮验证矩阵。
+- DeepSeek Harness `~0.2.1-alpha.2`（当前源码验证基线为 `dsh-v0.2.1-rc.2`，并已验证 npm `next` 渠道已发布的 `0.2.1-rc.2` 包）。npm `latest` 渠道仍是 `0.2.0-rc.2`，**不在**本候选版本覆盖范围内：预发布版本范围无法同时覆盖两个不同的 `major.minor.patch` 元组，需要单独跑一轮验证矩阵。
 - `PATH` 中存在 `pnpm`；DSH 会把插件管理操作转发给 pnpm。
 
 全局安装 DSH 后：
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.2.1-alpha.4
+npm install --global @deepseek-ai/dsh@0.2.1-rc.2
 dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.12
 dsh --profile web --dump-config
 dsh web
@@ -53,9 +53,9 @@ dsh web
 一次性运行：
 
 ```sh
-npx @deepseek-ai/dsh@0.2.1-alpha.4 plugin --profile web add dsh-smart-approval@0.1.0-rc.12
-npx @deepseek-ai/dsh@0.2.1-alpha.4 --profile web --dump-config
-npx @deepseek-ai/dsh@0.2.1-alpha.4 web
+npx @deepseek-ai/dsh@0.2.1-rc.2 plugin --profile web add dsh-smart-approval@0.1.0-rc.12
+npx @deepseek-ai/dsh@0.2.1-rc.2 --profile web --dump-config
+npx @deepseek-ai/dsh@0.2.1-rc.2 web
 ```
 
 相邻的 `deepseek-harness` 源码 checkout 是本候选版本的源码验证基线。如需验证匹配的源码 checkout，
@@ -259,8 +259,8 @@ pnpm run build
 pnpm pack --dry-run
 ```
 
-支持的 DSH 范围是 `~0.2.1-alpha.2`，已针对相邻 `deepseek-harness` 源码 checkout 与已发布的
-`0.2.1-alpha.4` alpha 包验证。npm `latest`/`next` 渠道的 `0.2.0-rc.2` 不在本候选版本覆盖范围内。
+支持的 DSH 范围是 `~0.2.1-alpha.2`，已针对相邻 `deepseek-harness` 的 `dsh-v0.2.1-rc.2` tag 与
+npm `next` 渠道已发布的 `0.2.1-rc.2` 包验证。npm `latest` 渠道的 `0.2.0-rc.2` 不在本候选版本覆盖范围内。
 真实 provider 的端到端审核和人工回退交互仍依赖部署凭据与具体环境验收。
 
 ## License

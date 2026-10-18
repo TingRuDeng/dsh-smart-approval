@@ -4,14 +4,14 @@ All notable user-facing changes to `dsh-smart-approval` are documented here.
 This project is in developer preview, so release candidates may still change
 before `0.1.0`.
 
-## [0.1.0-rc.12] - 2026-10-16
+## [0.1.0-rc.12] - 2026-10-18
 
-- Align with DeepSeek Harness `0.2.1-alpha.2` (adjacent source checkout, plus the
-  published `0.2.1-alpha.4` alpha packages). Peer ranges move to
-  `~0.2.1-alpha.2` for the `dsh-*` packages and `~4.0.5-alpha.1` for
-  `@deepseek-ai/cordis`; prerelease ranges cannot span two different
-  `major.minor.patch` tuples, so the `0.2.0-rc.2` release on npm `latest`/`next`
-  is out of scope for this candidate.
+- Align with DeepSeek Harness `0.2.1-rc.2` (adjacent source checkout at tag
+  `dsh-v0.2.1-rc.2`, plus the published `0.2.1-rc.2` packages on npm `next`).
+  Peer ranges move to `~0.2.1-alpha.2` for the `dsh-*` packages and
+  `~4.0.5-alpha.1` for `@deepseek-ai/cordis`; prerelease ranges cannot span two
+  different `major.minor.patch` tuples, so the `0.2.0-rc.2` release that npm
+  `latest` still serves is out of scope for this candidate.
 - Build the reviewer context from committed `session/event` pushes instead of
   reading Session event history. `Session.events` was removed by DSH and
   `snapshotEvents`/`eventAt`/`ownEvents` are deprecated and closed to new
@@ -36,11 +36,17 @@ before `0.1.0`.
   approval in a resumed session to a human. This is the plugin's only remaining
   history read: exactly one bounded `snapshotEvents(0, firstLiveSeq)` per
   announced session, not a per-request scan.
-- Remove the now-unused `@deepseek-ai/dsh-permission-presets` peer dependency
-  and the `sessions` service dependency.
-- Pin the release workflow's Harness checkout to `d7432673` (`dsh-v0.2.1-alpha.2`)
-  instead of the `0.1.2-alpha.2` commit, so the formal tarball and its DSH
-  install smoke are built and verified against the baseline the peers declare.
+- Remove the now-unused `@deepseek-ai/dsh-permission-presets` peer and dev
+  dependency, and the `sessions` service dependency.
+- Declare `engines.dsh` as well as the peers. DSH `0.2.1-alpha.3` made
+  `engines.dsh` the authoritative compatibility range: when it is present, the
+  host ignores the dsh peers and checks that range alone. Both carry the same
+  `~0.2.1-alpha.2`, so the accepted window is unchanged today and future bumps
+  have one place to land.
+- Pin CI and the release workflow's Harness checkout to `687f282e86`
+  (`dsh-v0.2.1-rc.2`) instead of the `dsh-v0.2.1-alpha.2` commit, so the formal
+  tarball and its DSH install smoke are built against the baseline the peers
+  declare.
 - Make CI check this plugin against that same Harness checkout. It previously
   installed only this repository, so `tsc` could not resolve any
   `@deepseek-ai/dsh-*` type and the job failed for an unrelated reason on every
@@ -50,6 +56,10 @@ before `0.1.0`.
   the plugin end to end. It covers a live append, a resumed session, and the
   fail-closed path, so the append-to-approval ordering is now enforced by a test
   rather than by reasoning about the source.
+- Note what the host's compatibility check actually admits. DSH evaluates ranges
+  with `includePrerelease`, so it also admits `0.2.2-alpha.1` for a
+  `~0.2.1-alpha.2` declaration; the declared range, not the host check, stays the
+  supported contract, and any `0.2.2` baseline still needs its own verification.
 
 ## [0.1.0-rc.11] - 2026-08-31
 

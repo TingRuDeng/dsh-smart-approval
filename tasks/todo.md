@@ -1005,3 +1005,47 @@ Session 事件历史」改为「订阅 `session/event` 增量维护的内存跟�
   `release.yml` 的 `release:formal` 覆盖（含 `dsh plugin add` + `--dump-config` smoke），
   本机无法复现（`pnpm install` 被 SIGTERM，exit 137）。
 - `vitest` 并行 jsdom 超时**未处理**：无 CI 证据，且 CI 红是缺 Harness 所致。
+
+---
+
+## 2026-10-18 跟进 DSH 0.2.1-rc.2：无需改代码，只改基线钉点
+
+DSH 已发到 `dsh-v0.2.1-rc.2`（npm `next` = `0.2.1-rc.2`；`latest` 仍是 `0.2.0-rc.2`，
+`alpha` = `0.2.1-alpha.5`）。把相邻 harness checkout 切到该 tag、按 rc.2 重建 `lib` 后实测：
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 0 错误（未被 rc.2 类型改动打破） |
+| `npx vitest run --no-file-parallelism` | 191/191，13/13 文件 |
+| `npx tsdown` | 通过 |
+
+`alpha.2 → rc.2` 的 990 个提交里，我们依赖的包只有增量改动：
+`session`（typert `resource` 字段、`job/registered` + `job/settled` 事件登记）、
+`agent`/`llm`（`imageRequestTarget`、`defaultBaseURL`），
+`user-approval`/`storage*`/`session-projection`/`commands`/`fs` 无 `src` 变更。
+**没有任何新增 `@deprecated`**，也没有 `session/event` 派发语义改动。
+
+本轮改动（都不改插件行为）：
+
+- `ci.yml` / `release.yml` 的 harness `ref` → `687f282e86`（`dsh-v0.2.1-rc.2`）。
+- `package.json` 增加 `engines.dsh: "~0.2.1-alpha.2"`：DSH `0.2.1-alpha.3` 起
+  `engines.dsh` 一旦存在就**单独决定**兼容性、忽略 dsh peer；两者取值相同，窗口不变。
+- 删除失效的 `@deepseek-ai/dsh-permission-presets` dev 依赖（全仓已无引用）。
+- README/README.zh 的验证基线、安装命令改 rc.2，并纠正 npm 渠道描述（`next` 已是 rc.2）。
+
+### 用宿主真实函数验证的兼容性矩阵
+
+`evaluatePluginCompatibility`（`packages/boot/app-boot`）实测：
+
+- 接受：`0.2.1-alpha.2/4/5`、`0.2.1-rc.2`、`0.2.1`、**`0.2.2-alpha.1`**
+- 拒绝：`0.2.0-rc.2`（npm `latest`）、`0.3.0-alpha.1`
+
+`0.2.2-alpha.1` 被接受是宿主用 `includePrerelease: true` 判定的结果，属**放宽**。
+结论：`0.2.2` 及以后仍需单独验证，不能因为宿主放行就当作已支持。
+
+### 仍未做
+
+- `npm pack --dry-run`、隔离 `DSH_HOME` 真实安装：只由 `release.yml` 的
+  `release:formal` 覆盖（本机 `pnpm install` 仍 exit 137）。
+- 真机 web 端渲染未验证：客户端包在 rc.2 有较大改动（`ui-conversation` 36 文件），
+  目前只有 jsdom 组件测试兜底，没有真实浏览器冒烟。
