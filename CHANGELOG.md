@@ -4,6 +4,15 @@ All notable user-facing changes to `dsh-smart-approval` are documented here.
 This project is in developer preview, so release candidates may still change
 before `0.1.0`.
 
+## [Unreleased]
+
+- Give the published-version check five minutes instead of 24 seconds. `rc.8`,
+  `rc.10`, and `rc.12` each published to npm successfully and then failed the
+  registry readiness probe with HTTP 404 while the version was still
+  propagating, which left the GitHub release as a draft and skipped
+  `finalize_release`. The probe now retries for five minutes and still fails
+  bounded when the version is genuinely absent.
+
 ## [0.1.0-rc.12] - 2026-10-18
 
 - Align with DeepSeek Harness `0.2.1-rc.2` (adjacent source checkout at tag

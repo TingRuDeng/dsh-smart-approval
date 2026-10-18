@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error Release scripts are executable .mjs modules without generated declarations.
 import * as releasePreview from '../scripts/release-preview-lib.mjs'
 
@@ -24,6 +24,55 @@ describe('release preview SBOM manifest', () => {
       dependencies: { zod: '^4.4.3' },
       optionalDependencies: { optional_runtime: '^1.0.0' },
     })
+  })
+})
+
+describe('release preview npm metadata readiness', () => {
+  const fetchNpmJsonWithRetry = (
+    releasePreview as typeof releasePreview & {
+      fetchNpmJsonWithRetry?: (options: Record<string, unknown>) => Promise<Record<string, unknown>>
+    }
+  ).fetchNpmJsonWithRetry
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('retries a transient registry 404 until the version is readable', async () => {
+    const responses = [
+      new Response('not found', { status: 404 }),
+      new Response(JSON.stringify({ name: 'dsh-smart-approval' }), { status: 200 }),
+    ]
+    const calls: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      calls.push(url)
+      return responses.shift()
+    })
+
+    expect(fetchNpmJsonWithRetry).toBeTypeOf('function')
+    await expect(fetchNpmJsonWithRetry?.({
+      url: 'https://registry.npmjs.org/dsh-smart-approval/0.1.0-rc.12',
+      label: 'npm version verification',
+      attempts: 3,
+      delayMs: 0,
+    })).resolves.toMatchObject({ name: 'dsh-smart-approval' })
+    expect(calls).toHaveLength(2)
+  })
+
+  it('fails bounded and names the attempt count when the version never appears', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', async () => {
+      calls += 1
+      return new Response('not found', { status: 404 })
+    })
+
+    await expect(fetchNpmJsonWithRetry?.({
+      url: 'https://registry.npmjs.org/dsh-smart-approval/0.1.0-rc.12',
+      label: 'npm version verification',
+      attempts: 4,
+      delayMs: 0,
+    })).rejects.toThrow('npm version verification did not become ready after 4 attempts (last status 404)')
+    expect(calls).toBe(4)
   })
 })
 
