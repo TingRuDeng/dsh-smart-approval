@@ -43,13 +43,13 @@ switches a session to Full access.
 ### Requirements
 
 - Node.js 24 or later.
-- DeepSeek Harness `~0.2.1-alpha.2` (current source verification baseline: `0.2.1-alpha.2`, and the published `0.2.1-alpha.4` alpha packages). The `0.2.0-rc.2` release on npm `latest`/`next` is **not** covered by this candidate; prerelease ranges cannot span two different `major.minor.patch` tuples, so it needs its own verification matrix.
+- DeepSeek Harness `~0.2.1-alpha.2` (current source verification baseline: `dsh-v0.2.1-rc.2`, and the published `0.2.1-rc.2` packages on npm `next`). The `0.2.0-rc.2` release that npm `latest` still serves is **not** covered by this candidate; prerelease ranges cannot span two different `major.minor.patch` tuples, so it needs its own verification matrix.
 - `pnpm` on `PATH`; DSH forwards plugin-management operations to pnpm.
 
 After installing the DSH CLI globally:
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.2.1-alpha.4
+npm install --global @deepseek-ai/dsh@0.2.1-rc.2
 dsh plugin --profile web add dsh-smart-approval@0.1.0-rc.12
 dsh --profile web --dump-config
 dsh web
@@ -58,9 +58,9 @@ dsh web
 For one-off execution:
 
 ```sh
-npx @deepseek-ai/dsh@0.2.1-alpha.4 plugin --profile web add dsh-smart-approval@0.1.0-rc.12
-npx @deepseek-ai/dsh@0.2.1-alpha.4 --profile web --dump-config
-npx @deepseek-ai/dsh@0.2.1-alpha.4 web
+npx @deepseek-ai/dsh@0.2.1-rc.2 plugin --profile web add dsh-smart-approval@0.1.0-rc.12
+npx @deepseek-ai/dsh@0.2.1-rc.2 --profile web --dump-config
+npx @deepseek-ai/dsh@0.2.1-rc.2 web
 ```
 
 The adjacent `deepseek-harness` source checkout is the source verification
@@ -325,10 +325,11 @@ pnpm pack --dry-run
 ```
 
 The supported DSH range is `~0.2.1-alpha.2`, verified against the adjacent
-`deepseek-harness` source checkout and the published `0.2.1-alpha.4` alpha
-packages. The `0.2.0-rc.2` release on npm `latest`/`next` is not covered by this
-candidate. Real-provider end-to-end review and human-fallback interaction still
-require deployment credentials and environment-specific acceptance testing.
+`deepseek-harness` checkout at tag `dsh-v0.2.1-rc.2` and the published
+`0.2.1-rc.2` packages on npm `next`. The `0.2.0-rc.2` release that npm `latest`
+still serves is not covered by this candidate. Real-provider end-to-end review
+and human-fallback interaction still require deployment credentials and
+environment-specific acceptance testing.
 
 ## License
 
