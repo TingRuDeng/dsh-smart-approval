@@ -1,11 +1,45 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ALLOW_REASON_CODES,
+  HUMAN_REASON_CODES,
+  REJECT_REASON_CODES,
   decisionFromAssessment,
   parseReviewerOutput,
   preflightApproval,
   preflightFileTarget,
 } from '../src/review-policy.ts'
 import type { FileTargetEvidence, FileWriteReviewAction } from '../src/review-context.ts'
+
+/**
+ * Pin the vocabulary literally rather than trusting the exported arrays.
+ *
+ * The per-code cases below iterate the exported sets, so deleting or moving a
+ * code would silently delete its own coverage. These literals are the anchor:
+ * reclassifying any reject code as an allow (or dropping one) fails here first,
+ * which is the failure the per-code cases alone cannot produce.
+ */
+describe('reason-code vocabulary', () => {
+  it('keeps the exact allow, human, and reject members', () => {
+    expect([...ALLOW_REASON_CODES]).toEqual([
+      'explicit-user-scope', 'read-only', 'bounded-build-test', 'bounded-project-write',
+    ])
+    expect([...HUMAN_REASON_CODES]).toEqual([
+      'uncertain', 'destructive', 'credential-risk', 'system-change', 'network-or-install', 'scope-not-authorized',
+    ])
+    expect([...REJECT_REASON_CODES]).toEqual([
+      'credential-exfiltration', 'security-bypass', 'explicit-user-boundary-violation', 'unauthorized-remote-write',
+    ])
+  })
+
+  it('never lets a code belong to two decisions at once', () => {
+    const allow = new Set<string>(ALLOW_REASON_CODES)
+    const human = new Set<string>(HUMAN_REASON_CODES)
+    const reject = new Set<string>(REJECT_REASON_CODES)
+    expect([...allow].filter(code => human.has(code) || reject.has(code))).toEqual([])
+    expect([...human].filter(code => reject.has(code))).toEqual([])
+    expect(allow.size + human.size + reject.size).toBe(14)
+  })
+})
 
 describe('parseReviewerOutput', () => {
   it('accepts an exact low-risk benign assessment', () => {
@@ -50,6 +84,55 @@ describe('parseReviewerOutput', () => {
     '{"riskLevel":"critical","authorization":"low","intent":"uncertain","reasonCode":"credential-exfiltration"}',
   ])('rejects non-contract output: %s', (output) => {
     expect(parseReviewerOutput(output)).toBeNull()
+  })
+
+  /**
+   * The reason-code vocabulary is where a security decision is expressed, so
+   * every code must stay bound to its own intent. These cases cover each
+   * member of each closed set: without them, moving a reject code into the
+   * allow set (or vice versa) would silently invert a decision while the rest
+   * of the suite stayed green.
+   */
+  it.each(ALLOW_REASON_CODES)('accepts allow code %s only with benign intent', (reasonCode) => {
+    expect(parseReviewerOutput(JSON.stringify({ riskLevel: 'low', authorization: 'high', intent: 'benign', reasonCode })))
+      .toEqual({ riskLevel: 'low', authorization: 'high', intent: 'benign', reasonCode })
+  })
+
+  it.each(HUMAN_REASON_CODES)('accepts human code %s only with uncertain intent', (reasonCode) => {
+    expect(parseReviewerOutput(JSON.stringify({ riskLevel: 'medium', authorization: 'unknown', intent: 'uncertain', reasonCode })))
+      .toEqual({ riskLevel: 'medium', authorization: 'unknown', intent: 'uncertain', reasonCode })
+  })
+
+  it.each(REJECT_REASON_CODES)('accepts reject code %s only with malicious intent', (reasonCode) => {
+    expect(parseReviewerOutput(JSON.stringify({ riskLevel: 'critical', authorization: 'low', intent: 'malicious', reasonCode })))
+      .toEqual({ riskLevel: 'critical', authorization: 'low', intent: 'malicious', reasonCode })
+    // The same code under a non-malicious intent must not be accepted: that
+    // would let a hostile reviewer smuggle a rejection-only code into a grant.
+    for (const intent of ['benign', 'uncertain'] as const) {
+      expect(parseReviewerOutput(JSON.stringify({ riskLevel: 'low', authorization: 'high', intent, reasonCode }))).toBeNull()
+    }
+  })
+
+  it.each(ALLOW_REASON_CODES)('never accepts allow code %s under malicious intent', (reasonCode) => {
+    // The inversion guard: a malicious classification must never be granted,
+    // even when the model pairs it with a reason code from the allow set.
+    expect(parseReviewerOutput(JSON.stringify({
+      riskLevel: 'critical', authorization: 'high', intent: 'malicious', reasonCode,
+    }))).toBeNull()
+  })
+
+  it.each(HUMAN_REASON_CODES)('never accepts human code %s under benign intent', (reasonCode) => {
+    expect(parseReviewerOutput(JSON.stringify({
+      riskLevel: 'low', authorization: 'high', intent: 'benign', reasonCode,
+    }))).toBeNull()
+  })
+
+  it.each(REJECT_REASON_CODES)('turns reject code %s into a local rejection, never a grant', (reasonCode) => {
+    const assessment = parseReviewerOutput(JSON.stringify({
+      riskLevel: 'critical', authorization: 'high', intent: 'malicious', reasonCode,
+    }))
+    if (assessment === null) throw new Error(`${reasonCode} was not accepted as a malicious assessment`)
+    expect(decisionFromAssessment(assessment)).toEqual({ decision: 'reject', reasonCode })
   })
 })
 

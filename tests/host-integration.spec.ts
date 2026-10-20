@@ -20,7 +20,7 @@ import { Storage } from '@deepseek-ai/dsh-storage'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -62,6 +62,7 @@ class StubFs extends Service {
 interface Host {
   readonly ctx: Context
   readonly backend: JsonStorageBackend
+  readonly root: string
 }
 
 /** Assemble the same services the host assembles, then mount the plugin. */
@@ -86,10 +87,11 @@ async function host(): Promise<Host> {
   new StubLlm(ctx)
   new StubFs(ctx)
   await ctx.plugin(ApprovalService)
-  // Direct mount: the plugin's own `inject` list is honoured by loading it
-  // through Cordis in production, but here the only thing under test is what
-  // `apply` registers on the waterfall. The reviewer route is pinned explicitly
-  // because a bare fixture session carries no `request/header` to resolve one.
+  // Direct mount. Cordis cannot load this module shape through `ctx.plugin`
+  // because it has no default export, so the fixture calls `apply` itself; the
+  // declared `inject` list is then verified separately by plugin.spec.ts.
+  // The reviewer route is pinned because a bare fixture session carries no
+  // `request/header` to resolve one.
   await plugin.apply(ctx, { reviewerProvider: 'deepseek', reviewerModel: 'deepseek-chat' })
   await vi.waitFor(() => {
     expect(ctx.get('storageDomain')).toBeDefined()
@@ -97,7 +99,7 @@ async function host(): Promise<Host> {
     expect(ctx.get('fs')).toBeDefined()
     expect(ctx.get('approval')).toBeDefined()
   })
-  return { ctx, backend }
+  return { ctx, backend, root }
 }
 
 /** Commit one complete turn and return the call id under review. */
@@ -181,6 +183,84 @@ describe('smart approval on a real host stack', () => {
     session.append('turn/start', { turn: 1 })
 
     // No `tool/call` was ever committed, so there is no action to review.
-    await expect(ask(ctx, session, ToolCallId('call-missing'))).resolves.not.toBe('allowed-once')
+    // Pin the exact fail-closed outcome: with no human answerer mounted the
+    // waterfall resolves 'unavailable'. A regression from handoff to a local
+    // 'rejected' would change enforcement semantics, so `not.toBe` is too weak.
+    await expect(ask(ctx, session, ToolCallId('call-missing'))).resolves.toBe('unavailable')
+  })
+
+  it('persists one audit row per automatic decision in the real domain backend', async () => {
+    const { ctx, root } = await host()
+    const session = ctx.sessions.create(SessionId('host-audit'), { meta: { cwd: '/work/main' } })
+    const callId = ToolCallId('call-host-audit')
+    commitTurn(session, callId)
+
+    await expect(ask(ctx, session, callId)).resolves.toBe('allowed-once')
+
+    // The audit is fire-and-forget, so wait for the row to land, then read it
+    // back from the persisted document on disk rather than from the in-memory
+    // cache: the assertions then describe durable bytes, not the plugin's own
+    // view of what it wrote.
+    const readPersisted = async (sessionId: string): Promise<{ entries: readonly { toolName: string, outcome: string, reasonCode: string, mode?: string }[] } | undefined> => {
+      try {
+        const raw = JSON.parse(await readFile(join(root, 'smart_approval.json'), 'utf8')) as {
+          tables?: { decisions?: Record<string, { entries: readonly unknown[] }> }
+        }
+        return raw.tables?.decisions?.[sessionId] as never
+      } catch {
+        return undefined
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 500))
+    const row = await readPersisted('host-audit')
+    expect(row?.entries).toEqual([
+      expect.objectContaining({
+        toolName: 'bash',
+        outcome: 'allowed-once',
+        reasonCode: 'bounded-build-test',
+        mode: 'smart',
+      }),
+    ])
+    // The audit must never carry the reviewed material itself.
+    expect(JSON.stringify(row)).not.toContain('pnpm test')
+  })
+
+  it('keeps every audit entry when one session logs several decisions in a burst', async () => {
+    const { ctx, root } = await host()
+    const session = ctx.sessions.create(SessionId('host-burst'), { meta: { cwd: '/work/main' } })
+
+    // Four sequential requests for one Session, each an automatic grant. The
+    // append calls are fire-and-forget, so this exercises the overlap path that
+    // a read-outside-the-write-chain implementation silently truncated.
+    for (let index = 0; index < 4; index += 1) {
+      const callId = ToolCallId(`call-burst-${index}`)
+      session.append('turn/start', { turn: index + 1 })
+      session.append('user/message', createUserMessage({
+        source: { kind: 'user' },
+        content: [{ type: 'text', text: '在当前项目运行测试' }],
+      }), { surfaceOp: 'append' })
+      session.append('tool/call', {
+        turn: index + 1,
+        step: 1,
+        callId,
+        name: 'bash',
+        arguments: JSON.stringify({ command: 'pnpm test' }),
+      })
+      await expect(ask(ctx, session, callId)).resolves.toBe('allowed-once')
+    }
+
+    const readEntries = async () => {
+      try {
+        const raw = JSON.parse(await readFile(join(root, 'smart_approval.json'), 'utf8')) as {
+          tables?: { decisions?: Record<string, { entries: readonly unknown[] }> }
+        }
+        return raw.tables?.decisions?.['host-burst']?.entries
+      } catch {
+        return undefined
+      }
+    }
+    await vi.waitFor(async () => {
+      expect(await readEntries()).toHaveLength(4)
+    })
   })
 })

@@ -8,7 +8,14 @@ import type {
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import { describe, expect, it, vi } from 'vitest'
 import { createSmartApprovalHandler } from '../src/approval-handler.ts'
-import { buildReviewPayload, type ReviewContextLimits } from '../src/review-context.ts'
+import { REJECT_REASON_CODES } from '../src/review-policy.ts'
+import type { ReviewerAssessment } from '../src/review-policy.ts'
+import { buildReviewPayload,
+  type FileReviewAction,
+  type FileTargetInspectionResult,
+  type ReviewContextLimits,
+  type ReviewPayload,
+} from '../src/review-context.ts'
 import { SessionContextTracker, type ApprovalContext, type SessionContextLimits } from '../src/session-context.ts'
 import type { ReviewMode } from '../src/review-mode.ts'
 
@@ -466,15 +473,20 @@ describe('createSmartApprovalHandler', () => {
 
   function setup(options: {
     mode?: ReviewMode
-    assessment?:
-      | typeof benignBuildAssessment
-      | typeof uncertainAssessment
-      | typeof maliciousAssessment
-      | null
+    assessment?: ReviewerAssessment | null
     reviewError?: Error
     contextFor?: () => ApprovalContext
+    inspectFileTarget?: (
+      action: FileReviewAction,
+      workspaceRoot: string | undefined,
+      request: ApprovalRequest,
+    ) => Promise<FileTargetInspectionResult>
+    /** Run while the request is still in flight, before the handler re-reads the signal. */
+    duringReview?: (request: ApprovalRequest) => void
+    duringInspection?: (request: ApprovalRequest) => void
   } = {}) {
-    const review = vi.fn(async () => {
+    const review = vi.fn(async (_payload: ReviewPayload, request: ApprovalRequest) => {
+      options.duringReview?.(request)
       if (options.reviewError !== undefined) throw options.reviewError
       return options.assessment === undefined ? benignBuildAssessment : options.assessment
     })
@@ -486,6 +498,16 @@ describe('createSmartApprovalHandler', () => {
       limits: LIMITS,
       review,
       log,
+      ...options.inspectFileTarget === undefined ? {} : {
+        inspectFileTarget: async (
+          action: FileReviewAction,
+          workspaceRoot: string | undefined,
+          request: ApprovalRequest,
+        ) => {
+          options.duringInspection?.(request)
+          return options.inspectFileTarget!(action, workspaceRoot, request)
+        },
+      },
     })
     return { handler, review, next, log }
   }
@@ -508,6 +530,45 @@ describe('createSmartApprovalHandler', () => {
     expect(next).toHaveBeenCalledOnce()
     expect(review).not.toHaveBeenCalled()
     expect(log).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Cancellation must be re-checked at every point the handler awaits, not just
+   * on entry. These cases abort while the request is genuinely in flight, so
+   * deleting a post-await check would let a cancelled request return
+   * `allowed-once` without any other test failing.
+   */
+  it.each(['smart', 'unattended'] as const)(
+    'reports cancellation when the signal aborts during review in %s mode',
+    async (mode) => {
+      const controller = new AbortController()
+      const { handler, next, log } = setup({
+        mode,
+        // Abort after the reviewer produced an allow: only the post-review
+        // check can still convert this into a cancellation.
+        duringReview: () => { controller.abort() },
+      })
+
+      await expect(handler(requestOf({ signal: controller.signal }), next)).resolves.toBe('cancelled')
+      expect(next).not.toHaveBeenCalled()
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: 'cancelled', reasonCode: 'request-cancelled', mode,
+      }))
+    },
+  )
+
+  it('reports cancellation when the signal aborts while review is throwing', async () => {
+    const controller = new AbortController()
+    const { handler, next, log } = setup({
+      reviewError: new Error('provider cancelled'),
+      duringReview: () => { controller.abort() },
+    })
+
+    await expect(handler(requestOf({ signal: controller.signal }), next)).resolves.toBe('cancelled')
+    expect(next).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'cancelled', reasonCode: 'request-cancelled',
+    }))
   })
 
   it('changes mode on the next request without recreating the handler', async () => {
@@ -600,6 +661,85 @@ describe('createSmartApprovalHandler', () => {
     expect(next).toHaveBeenCalledOnce()
   })
 
+  /**
+   * A plain in-workspace write that reaches target inspection instead of the
+   * escalation preflight, so the inspection branch itself is exercised.
+   */
+  function plainWriteContext(): ApprovalContext {
+    return contextOf(actionEvents(JSON.stringify({
+      file_path: '/work/main/report.md',
+      content: '# Report\n',
+    }), [directUser('在 /work/main 创建 report.md')], 'write'))
+  }
+
+  /**
+   * A target inspector may legitimately refuse to produce evidence (symlink,
+   * alias, protected location, unreadable path). That refusal must reach the
+   * human chain before any reviewer runs, and the same must hold for an abort
+   * that lands while inspection is still in flight.
+   */
+  it.each([
+    ['file-target-symlink'],
+    ['file-target-aliased'],
+    ['file-target-unavailable'],
+  ])('hands a %s inspection refusal to the human chain without reviewing', async (reasonCode) => {
+    const { handler, review, next, log } = setup({
+      contextFor: plainWriteContext,
+      inspectFileTarget: async () => ({ kind: 'human', reasonCode }),
+    })
+
+    await expect(handler(requestOf({ toolName: 'write' }), next)).resolves.toBe('rejected')
+    expect(review).not.toHaveBeenCalled()
+    expect(next).toHaveBeenCalledOnce()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'human', reasonCode }))
+  })
+
+  it('rejects a symlink inspection refusal locally in unattended mode', async () => {
+    const { handler, review, next, log } = setup({
+      mode: 'unattended',
+      contextFor: plainWriteContext,
+      inspectFileTarget: async () => ({ kind: 'human', reasonCode: 'file-target-symlink' }),
+    })
+
+    await expect(handler(requestOf({ toolName: 'write' }), next)).resolves.toBe('rejected')
+    expect(review).not.toHaveBeenCalled()
+    expect(next).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'rejected', reasonCode: 'file-target-symlink', mode: 'unattended',
+    }))
+  })
+
+  it('reports cancellation when the signal aborts during file inspection', async () => {
+    const controller = new AbortController()
+    const { handler, review, next, log } = setup({
+      contextFor: plainWriteContext,
+      duringInspection: () => { controller.abort() },
+      inspectFileTarget: async () => readyOutsideTarget,
+    })
+
+    await expect(handler(requestOf({ toolName: 'write', signal: controller.signal }), next))
+      .resolves.toBe('cancelled')
+    expect(review).not.toHaveBeenCalled()
+    expect(next).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'cancelled', reasonCode: 'request-cancelled',
+    }))
+  })
+
+  it('hands a throwing inspection to the human chain as a target error', async () => {
+    const { handler, review, next, log } = setup({
+      contextFor: plainWriteContext,
+      inspectFileTarget: async () => { throw new Error('filesystem unavailable') },
+    })
+
+    await expect(handler(requestOf({ toolName: 'write' }), next)).resolves.toBe('rejected')
+    expect(review).not.toHaveBeenCalled()
+    expect(next).toHaveBeenCalledOnce()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'human', reasonCode: 'file-target-error',
+    }))
+  })
+
   it('does not call the reviewer after mode changes during file inspection', async () => {
     let selectedMode: ReviewMode = 'smart'
     const { request, context } = writeRequest()
@@ -638,13 +778,49 @@ describe('createSmartApprovalHandler', () => {
     }))
   })
 
+  /**
+   * Every rejection-only reason code must reach the local rejection path in
+   * both automated modes. Only `credential-exfiltration` was covered, so the
+   * other three could have been reclassified into the allow set and turned a
+   * malicious classification into a grant without failing a test.
+   */
+  it.each(REJECT_REASON_CODES)('rejects a malicious %s assessment locally in smart mode', async (reasonCode) => {
+    const { handler, next, log } = setup({
+      mode: 'smart',
+      assessment: { riskLevel: 'critical', authorization: 'high', intent: 'malicious', reasonCode },
+    })
+
+    await expect(handler(requestOf(), next)).resolves.toBe('rejected')
+    expect(next).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'rejected', reasonCode }))
+  })
+
+  it.each(REJECT_REASON_CODES)('rejects a malicious %s assessment locally in unattended mode', async (reasonCode) => {
+    const { handler, next, log } = setup({
+      mode: 'unattended',
+      assessment: { riskLevel: 'critical', authorization: 'high', intent: 'malicious', reasonCode },
+    })
+
+    await expect(handler(requestOf(), next)).resolves.toBe('rejected')
+    expect(next).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'rejected', reasonCode }))
+  })
+
+  /**
+   * A handoff and a local rejection both surface as `rejected` to the caller
+   * (the stub `next` returns 'rejected'), so the observable difference is the
+   * logged outcome plus whether the human chain ran. Asserting both keeps a
+   * handoff from silently becoming a local rejection, or vice versa.
+   */
   it.each([
-    [uncertainAssessment, 'human'],
-    [null, 'invalid'],
-  ])('hands %s reviewer result to the existing human chain', async (assessment, _label) => {
-    const { handler, next } = setup({ assessment })
+    [uncertainAssessment, 'uncertain'],
+    [null, 'invalid-review'],
+  ])('hands the %s reviewer result to the human chain with reason %s', async (assessment, reasonCode) => {
+    const { handler, next, log } = setup({ assessment })
+
     await expect(handler(requestOf(), next)).resolves.toBe('rejected')
     expect(next).toHaveBeenCalledOnce()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'human', reasonCode }))
   })
 
   it('hands reviewer failures to the existing human chain', async () => {
