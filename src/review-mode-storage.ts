@@ -95,6 +95,18 @@ export class ReviewModeStore {
 
 /** Session decision-audit store backed by storage-domain's synchronous read cache. */
 export class DecisionLogStore {
+  /**
+   * Per-Session tail of the in-process append chain.
+   *
+   * `append` cannot choose between `put` and `update` from a read taken
+   * outside the domain's write chain: the synchronous `get` reflects only
+   * writes that have already landed, so two un-awaited appends for one
+   * Session both observe "no row", both take `put`, and the later one
+   * silently overwrites the earlier. Serializing per Session makes every
+   * decision observe its predecessor's durable write before choosing.
+   */
+  private readonly appendTails = new Map<SessionId, Promise<void>>()
+
   constructor(
     private readonly table: KvTable<SessionId, DecisionRow>,
     private readonly maxEntries: number,
@@ -116,13 +128,37 @@ export class DecisionLogStore {
 
   /**
    * Durably append one decision, keeping at most maxEntries per lifecycle.
-   * The first entry materializes the row with put; later entries ride the
-   * domain's atomic update chain. A lifecycle fingerprint mismatch replaces
-   * the whole row instead of appending to a stale one.
+   *
+   * Appends for one Session are serialized so each observes its predecessor's
+   * landed write: the first entry materializes the row with put, and later
+   * entries ride the domain's atomic update chain. A lifecycle fingerprint
+   * mismatch replaces the whole row instead of appending to a stale one.
+   *
+   * The returned promise settles with this entry's own write, so a caller may
+   * await it; the plugin's audit side channel deliberately does not.
    */
   async append(session: Session, entry: Omit<DecisionEntry, 'time'>): Promise<void> {
     if (this.maxEntries === 0) return
     const stored: DecisionEntry = { ...entry, time: Date.now() }
+    const previous = this.appendTails.get(session.id) ?? Promise.resolve()
+    // Chain on a settled predecessor: one failed audit write must not strand
+    // every later append for the Session.
+    const tail = previous.then(
+      () => this.writeEntry(session, stored),
+      () => this.writeEntry(session, stored),
+    )
+    this.appendTails.set(session.id, tail)
+    try {
+      await tail
+    } finally {
+      // Drop the tail only when this append is still the newest link, so the
+      // map never retains a settled promise for a live Session.
+      if (this.appendTails.get(session.id) === tail) this.appendTails.delete(session.id)
+    }
+  }
+
+  /** Choose put or update from a read that is now ordered behind every prior write. */
+  private async writeEntry(session: Session, stored: DecisionEntry): Promise<void> {
     const current = this.get(session)
     if (current === undefined) {
       await this.table.put(session.id, {
