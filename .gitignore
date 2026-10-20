@@ -5,3 +5,4 @@ artifacts/
 coverage/
 *.tgz
 .DS_Store
+.workbuddy/
