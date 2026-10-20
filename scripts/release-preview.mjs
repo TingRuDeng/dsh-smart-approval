@@ -13,7 +13,7 @@ import {
   assertNpmLatestAdvances,
   assertTarballEntries,
   createRuntimeSbomManifest,
-  fetchNpmJsonWithRetry,
+  readSbomSpecVersion,
   RELEASE_REPOSITORY,
   RELEASE_WORKFLOW,
   sha256,
@@ -175,6 +175,10 @@ async function main() {
     const sbomFilename = packed.filename.replace(/\.tgz$/u, '.cdx.json')
     await generateSbom(packedRoot, join(artifacts, sbomFilename))
     const sbomBytes = await readFile(join(artifacts, sbomFilename))
+    // The descriptor is attested and shipped, so the spec version must describe
+    // the document actually produced: npm's CycloneDX emitter has shipped both
+    // 1.5 and 1.6, and a hardcoded value silently signs a false claim.
+    const sbomSpecVersion = readSbomSpecVersion(sbomBytes, sbomFilename)
     const checksumContent = `${digest}  ${packed.filename}\n`
     await writeFile(join(artifacts, 'SHA256SUMS'), checksumContent, 'utf8')
     const descriptor = {
@@ -196,7 +200,7 @@ async function main() {
           integrity,
         },
         checksums: { filename: 'SHA256SUMS', sha256: sha256(checksumContent) },
-        sbom: { filename: sbomFilename, sha256: sha256(sbomBytes), format: 'CycloneDX', specVersion: '1.6' },
+        sbom: { filename: sbomFilename, sha256: sha256(sbomBytes), format: 'CycloneDX', specVersion: sbomSpecVersion },
       },
     }
     await writeFile(join(artifacts, 'release.json'), `${JSON.stringify(descriptor, null, 2)}\n`, 'utf8')

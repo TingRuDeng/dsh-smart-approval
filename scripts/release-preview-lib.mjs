@@ -23,27 +23,98 @@ export function createRuntimeSbomManifest(manifest) {
 
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
-const rcVersion = value => {
-  const match = /^(\d+)\.(\d+)\.(\d+)-rc\.(\d+)$/u.exec(value ?? '')
+/**
+ * Parse a SemVer version into comparable parts.
+ *
+ * The release gate needs this for more than RC-to-RC ordering: once `latest`
+ * points at a stable `0.1.0`, every later `0.1.0-rc.n` is a *prerelease of an
+ * already-released version* and must be refused, not silently treated as
+ * unparseable. A build suffix is ignored beyond the numeric `rc.N` ordering.
+ * @param value - the version string.
+ * @returns comparable parts, or undefined when the value is not SemVer.
+ */
+const parseVersion = (value) => {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(value ?? '')
   if (match === null) return undefined
-  return match.slice(1).map(Number)
+  const prerelease = match[4] === undefined ? [] : match[4].split('.')
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease,
+  }
 }
 
-export function compareRcVersions(left, right) {
-  const a = rcVersion(left)
-  const b = rcVersion(right)
-  if (a === undefined || b === undefined) throw new Error('only x.y.z-rc.n versions are supported')
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) return a[index] - b[index]
+/**
+ * Compare two SemVer versions by the SemVer 2.0.0 precedence rules.
+ * @returns negative when `left` precedes `right`, positive when it follows,
+ *   and 0 when they rank equally.
+ * @throws when either value is not SemVer.
+ */
+export function compareVersions(left, right) {
+  const a = parseVersion(left)
+  const b = parseVersion(right)
+  if (a === undefined || b === undefined) throw new Error('only SemVer versions are supported')
+  for (let index = 0; index < 3; index += 1) {
+    if (a.core[index] !== b.core[index]) return a.core[index] - b.core[index]
+  }
+  // A version without a prerelease outranks any prerelease of the same core.
+  if (a.prerelease.length === 0 && b.prerelease.length === 0) return 0
+  if (a.prerelease.length === 0) return 1
+  if (b.prerelease.length === 0) return -1
+  const length = Math.max(a.prerelease.length, b.prerelease.length)
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = a.prerelease[index]
+    const rightPart = b.prerelease[index]
+    // A shorter prerelease set precedes a longer one when all shared parts match.
+    if (leftPart === undefined) return -1
+    if (rightPart === undefined) return 1
+    const leftNumeric = /^\d+$/u.test(leftPart)
+    const rightNumeric = /^\d+$/u.test(rightPart)
+    if (leftNumeric && rightNumeric) {
+      const difference = Number(leftPart) - Number(rightPart)
+      if (difference !== 0) return difference
+      continue
+    }
+    // Numeric identifiers always rank below alphanumeric ones.
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1
+    if (leftPart !== rightPart) return leftPart < rightPart ? -1 : 1
   }
   return 0
 }
 
+/** Kept for callers that only ever compare RC versions. */
+export function compareRcVersions(left, right) {
+  return compareVersions(left, right)
+}
+
 export function assertNpmLatestAdvances(packageName, candidate, currentLatest) {
   if (currentLatest === undefined || currentLatest === null || currentLatest === '') return
-  if (compareRcVersions(candidate, currentLatest) <= 0) {
+  if (compareVersions(candidate, currentLatest) <= 0) {
     throw new Error(`${packageName}@${candidate} is not newer than npm latest ${currentLatest}`)
   }
+}
+
+/**
+ * HTTP statuses that mean "the registry has not caught up yet", not "this is
+ * wrong". npm's read path answers 404 while a version propagates, and 429/5xx
+ * while it is rate limited or shedding load; all three are worth another look
+ * inside the same bounded budget.
+ */
+const TRANSIENT_REGISTRY_STATUSES = new Set([404, 429, 500, 502, 503, 504])
+
+/**
+ * Delay before the next attempt: honour a numeric `retry-after` when the
+ * registry sends one, otherwise use the caller's pace. The header is capped at
+ * the caller's remaining patience so a hostile or misconfigured value cannot
+ * stall a release past its budget.
+ * @param response - the failed or not-ready response, when there was one.
+ * @param fallbackMs - the caller's configured delay.
+ * @returns delay in milliseconds.
+ */
+function retryDelayMs(response, fallbackMs) {
+  const header = response?.headers?.get?.('retry-after')
+  const seconds = Number.parseInt(header ?? '', 10)
+  if (!Number.isFinite(seconds) || seconds <= 0) return fallbackMs
+  return Math.min(seconds * 1000, Math.max(fallbackMs, 60_000))
 }
 
 export async function fetchNpmJsonWithRetry({
@@ -54,6 +125,7 @@ export async function fetchNpmJsonWithRetry({
   delayMs = 3000,
 }) {
   let lastStatus = 'no response'
+  let lastDetail = ''
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const response = await fetch(url, {
       cache: 'no-store',
@@ -63,12 +135,16 @@ export async function fetchNpmJsonWithRetry({
     if (response.ok) {
       const metadata = await response.json()
       if (isReady(metadata)) return metadata
-    } else if (response.status !== 404) {
+      // A 200 that is not ready is a propagation state (for example a version
+      // that exists before its attestation does); naming it keeps the failure
+      // message from claiming a 404 when the real gate was something else.
+      lastDetail = ' (readable but not ready)'
+    } else if (!TRANSIENT_REGISTRY_STATUSES.has(response.status)) {
       throw new Error(`${label} returned HTTP ${response.status}`)
     }
-    if (attempt < attempts) await sleep(delayMs)
+    if (attempt < attempts) await sleep(retryDelayMs(response, delayMs))
   }
-  throw new Error(`${label} did not become ready after ${attempts} attempts (last status ${lastStatus})`)
+  throw new Error(`${label} did not become ready after ${attempts} attempts (last status ${lastStatus}${lastDetail})`)
 }
 
 export async function fetchNpmTarballWithRetry({
@@ -97,13 +173,41 @@ export async function fetchNpmTarballWithRetry({
       headers: { accept: 'application/octet-stream', 'cache-control': 'no-cache' },
     })
     if (response?.ok === true) return Buffer.from(await response.arrayBuffer())
-    if (response?.status !== 404 || attempt === attempts) {
+    // Only genuinely transient statuses are retried; a 403 or 401 here means
+    // the credentials or the URL are wrong and another attempt cannot help.
+    if (!TRANSIENT_REGISTRY_STATUSES.has(response?.status) || attempt === attempts) {
       throw new Error(`${label} returned HTTP ${String(response?.status)}`)
     }
-    await wait()
+    await wait(retryDelayMs(response, 3000))
   }
 
   throw new Error(`${label} retry loop terminated unexpectedly`)
+}
+
+/**
+ * Read the CycloneDX specification version from the generated document.
+ *
+ * The release descriptor is attested and shipped alongside the SBOM, so a
+ * hardcoded value can assert a format the file does not use. npm's emitter has
+ * produced both 1.5 and 1.6 across toolchain versions; deriving the value from
+ * the artifact keeps the descriptor honest without pinning the npm version.
+ * @param bytes - the generated SBOM document.
+ * @param filename - the SBOM filename, for the error message.
+ * @returns the declared `specVersion`.
+ * @throws when the document is not JSON or does not declare a version.
+ */
+export function readSbomSpecVersion(bytes, filename) {
+  let document
+  try {
+    document = JSON.parse(bytes.toString('utf8'))
+  } catch {
+    throw new Error(`${filename} is not valid JSON`)
+  }
+  const specVersion = document?.specVersion
+  if (typeof specVersion !== 'string' || specVersion === '') {
+    throw new Error(`${filename} does not declare a CycloneDX specVersion`)
+  }
+  return specVersion
 }
 
 export function assertFormalReleaseContext({

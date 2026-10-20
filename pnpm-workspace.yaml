@@ -1,3 +1,10 @@
+# pnpm reads this file as the workspace root marker. It deliberately declares no
+# `packages:` — this repository is a single package, not a monorepo.
+#
+# The exclude list below only takes effect when a matching `minimumReleaseAge`
+# is configured (here or via .npmrc). Neither is set, so these entries currently
+# do nothing; they are kept so that enabling `minimumReleaseAge` later does not
+# immediately block the pinned Harness toolchain packages below their age.
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cordis-plugin-include@1.0.6'
   - '@deepseek-ai/cordis-plugin-loader@1.0.2'

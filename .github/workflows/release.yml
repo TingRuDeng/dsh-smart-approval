@@ -41,7 +41,11 @@ jobs:
       - name: Pin package managers
         run: |
           corepack enable
-          corepack prepare pnpm@11.18.0 --activate
+          # corepack resolves a directory's `packageManager` field ahead of the
+          # activated default, so this pin only governs directories without one.
+          # It matches the plugin's declared pnpm so the two agree; the Harness
+          # checkout keeps its own declared pnpm, which is intended.
+          corepack prepare pnpm@11.7.0 --activate
           npm install --global npm@11.16.0
       - name: Build Harness libraries
         working-directory: deepseek-harness
@@ -327,7 +331,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm-release
     permissions:
-      contents: write
+      # This job only reads the staged draft and the artifacts; it never writes
+      # to the repository, so it does not get contents: write.
+      contents: read
       id-token: write
       actions: read
     outputs:
@@ -472,6 +478,8 @@ jobs:
           TARBALL: ${{ needs.publish_npm.outputs.tarball }}
           CHECKSUMS: ${{ needs.publish_npm.outputs.checksums }}
           SBOM: ${{ needs.publish_npm.outputs.sbom }}
+          PROVENANCE_BUNDLE_SHA256: ${{ needs.publish_npm.outputs.provenance_bundle_sha256 }}
+          SBOM_BUNDLE_SHA256: ${{ needs.publish_npm.outputs.sbom_bundle_sha256 }}
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
@@ -485,6 +493,24 @@ jobs:
           if (!Array.isArray(release.assets) || release.assets.length !== expected.size) throw new Error('release asset count mismatch')
           for (const asset of release.assets) if (!expected.delete(asset.name)) throw new Error(`release asset mismatch: ${asset.name}`)
           if (expected.size !== 0) throw new Error('release asset set incomplete')
+
+          // Names alone do not prove the right bytes were staged. The two
+          // attestation bundles were hashed before upload; verify the assets
+          // the draft actually holds against those digests before promoting.
+          const { createHash } = await import('node:crypto')
+          const digests = new Map([
+            ['provenance.bundle.json', process.env.PROVENANCE_BUNDLE_SHA256],
+            ['sbom.bundle.json', process.env.SBOM_BUNDLE_SHA256],
+          ])
+          for (const [name, expectedSha] of digests) {
+            if (!/^[0-9a-f]{64}$/u.test(expectedSha ?? '')) throw new Error(`missing digest for ${name}`)
+            const asset = release.assets.find(candidate => candidate.name === name)
+            const download = await fetch(asset.browser_download_url, { headers })
+            if (!download.ok) throw new Error(`${name} download returned ${download.status}`)
+            const actualSha = createHash('sha256').update(Buffer.from(await download.arrayBuffer())).digest('hex')
+            if (actualSha !== expectedSha) throw new Error(`${name} digest mismatch before publish`)
+          }
+
           const published = await fetch(url, { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ draft: false, prerelease: true, make_latest: 'false' }) })
           if (!published.ok) throw new Error(`release publish returned ${published.status}`)
           const final = await published.json()

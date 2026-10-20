@@ -1,0 +1,152 @@
+# Recover a release that published to npm but never left draft.
+#
+# `Release RC` is deliberately single-attempt: every job rejects a rerun so a
+# partially-published candidate cannot be silently re-driven. That guard left
+# one state with no automated exit — npm had the version, the GitHub release
+# stayed a draft because `finalize_release` never ran (rc.8, rc.10, and rc.12
+# all ended there), and a new tag for the same version is refused as already
+# published.
+#
+# This workflow is that exit, and it is deliberately narrow:
+#   * it never publishes to npm, never rebuilds, and never uploads assets;
+#   * it refuses unless the exact version is already public on npm AND its
+#     tarball bytes match the attested digest;
+#   * it refuses unless the draft is the only thing left to change;
+#   * it only flips `draft` to false.
+#
+# It is manual by design: an operator names the tag after confirming the
+# registry state, so no automation can promote a release nobody inspected.
+
+name: Finalize Draft Release
+
+permissions: {}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag of the release to finalize (for example v0.1.0-rc.13)'
+        required: true
+        type: string
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Verify the tag names an RC this repository owns
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            v*-rc.*) ;;
+            *) echo "::error::tag '$TAG' is not an RC tag"; exit 1 ;;
+          esac
+
+      - name: Confirm npm holds the version and the draft is ready to publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          const tag = process.env.TAG
+          const api = `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}`
+          const headers = {
+            accept: 'application/vnd.github+json',
+            authorization: `Bearer ${process.env.GH_TOKEN}`,
+            'x-github-api-version': '2022-11-28',
+          }
+
+          // 1. The draft must exist, be a prerelease, and still be a draft.
+          const listResponse = await fetch(`${api}/releases?per_page=100`, { headers })
+          if (!listResponse.ok) throw new Error(`release listing returned ${listResponse.status}`)
+          const releases = await listResponse.json()
+          const release = releases.find((candidate) => candidate.tag_name === tag)
+          if (release === undefined) throw new Error(`no release exists for tag ${tag}`)
+          if (release.prerelease !== true) throw new Error(`release ${tag} is not a prerelease`)
+          if (release.draft === false) {
+            // Already final: report success so a re-run is harmless, but change nothing.
+            console.log(`release ${tag} is already published; nothing to do`)
+            process.exit(0)
+          }
+
+          // 2. Every expected asset must already be attached, by exact name.
+          const expected = new Set(['release.json', 'SHA256SUMS', 'provenance.bundle.json', 'sbom.bundle.json'])
+          const assets = new Set((release.assets ?? []).map(asset => asset.name))
+          for (const name of assets) {
+            if (name.endsWith('.tgz') || name.endsWith('.cdx.json')) expected.add(name)
+          }
+          for (const name of expected) {
+            if (!assets.has(name)) throw new Error(`draft ${tag} is missing asset ${name}`)
+          }
+
+          // 3. The version must already be public on npm, and its bytes must match
+          //    the attested tarball. Publishing here would be out of scope.
+          const version = tag.replace(/^v/, '')
+          const packageName = 'dsh-smart-approval'
+          const encoded = encodeURIComponent(packageName)
+          const versionResponse = await fetch(
+            `https://registry.npmjs.org/${encoded}/${encodeURIComponent(version)}`,
+            { cache: 'no-store', headers: { accept: 'application/json', 'cache-control': 'no-cache' } },
+          )
+          if (versionResponse.status === 404) {
+            throw new Error(`${packageName}@${version} is not on npm; this workflow only finalizes published versions`)
+          }
+          if (!versionResponse.ok) throw new Error(`npm version lookup returned ${versionResponse.status}`)
+          const metadata = await versionResponse.json()
+
+          // Compare against the checksum the workflow itself staged, so a draft
+          // built from different bytes cannot be promoted against these assets.
+          const checksumAsset = (release.assets ?? []).find(asset => asset.name === 'SHA256SUMS')
+          const checksumResponse = await fetch(checksumAsset.browser_download_url, { headers })
+          if (!checksumResponse.ok) throw new Error(`checksum asset download returned ${checksumResponse.status}`)
+          const checksumLine = (await checksumResponse.text()).trim()
+          const [expectedSha] = checksumLine.split(/\s+/u)
+          if (!/^[0-9a-f]{64}$/u.test(expectedSha ?? '')) throw new Error('staged checksums are malformed')
+
+          const tarballResponse = await fetch(metadata.dist.tarball, { cache: 'no-store' })
+          if (!tarballResponse.ok) throw new Error(`npm tarball download returned ${tarballResponse.status}`)
+          const { createHash } = await import('node:crypto')
+          const actual = createHash('sha256').update(Buffer.from(await tarballResponse.arrayBuffer())).digest('hex')
+          if (actual !== expectedSha) throw new Error('npm tarball bytes do not match the staged checksum')
+
+          console.log(`verified ${packageName}@${version}: npm bytes match the staged checksum`)
+          NODE
+
+      - name: Promote the draft to a published prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          const tag = process.env.TAG
+          const api = `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}`
+          const headers = {
+            accept: 'application/vnd.github+json',
+            authorization: `Bearer ${process.env.GH_TOKEN}`,
+            'x-github-api-version': '2022-11-28',
+          }
+          const listResponse = await fetch(`${api}/releases?per_page=100`, { headers })
+          if (!listResponse.ok) throw new Error(`release listing returned ${listResponse.status}`)
+          const release = (await listResponse.json()).find((candidate) => candidate.tag_name === tag)
+          if (release === undefined) throw new Error(`no release exists for tag ${tag}`)
+          if (release.draft === false) {
+            console.log(`release ${tag} is already published`)
+            process.exit(0)
+          }
+          const published = await fetch(`${api}/releases/${release.id}`, {
+            method: 'PATCH',
+            headers: { ...headers, 'content-type': 'application/json' },
+            body: JSON.stringify({ draft: false, prerelease: true, make_latest: 'false' }),
+          })
+          if (!published.ok) throw new Error(`release publish returned ${published.status}`)
+          const final = await published.json()
+          if (final.draft || !final.prerelease || final.tag_name !== tag) {
+            throw new Error('published release verification failed')
+          }
+          console.log(`published ${tag}`)
+          NODE
